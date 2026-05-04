@@ -1722,6 +1722,7 @@ class LlamaStation(ctk.CTk):
             ("ℹ️", "nav_info",    self._show_info),
             ("🌐", "nav_download", self._show_download),
             ("📡", "nav_api",      self._show_api_docs),
+            ("⚖️", "nav_about",   self._show_about),
         ]:
             b = ctk.CTkButton(sb, text=f"  {icon}  {T(label_key)}",
                                fg_color="transparent", hover_color=C["card"],
@@ -1790,6 +1791,7 @@ class LlamaStation(ctk.CTk):
             "Info modelo": self._build_info(self.main),
             "Descargar":   self._build_downloader(self.main),
             "API Docs":    self._build_api_docs(self.main),
+            "Acerca de":   self._build_about(self.main),
         }
         self._show_chat()
 
@@ -1800,6 +1802,7 @@ class LlamaStation(ctk.CTk):
         key_map = {
             "Chat": "nav_chat", "Servidor": "nav_server", "Logs": "nav_logs",
             "Info modelo": "nav_info", "Descargar": "nav_download", "API Docs": "nav_api",
+            "Acerca de": "nav_about",
         }
         active_key = key_map.get(name, name)
         for k, b in self.nav_btns.items():
@@ -3277,21 +3280,21 @@ class LlamaStation(ctk.CTk):
         Forzamos un repintado completo para evitar el flash negro.
         """
         if event.widget is self:
-            # Varios intentos escalonados — el primero atrapa el flash inicial,
-            # los siguientes limpian cualquier residuo
             self.after(10,  self._force_redraw)
-            self.after(50,  self._force_redraw)
-            self.after(150, self._force_redraw)
+            self.after(80,  self._force_redraw)
+            self.after(200, self._force_redraw)
 
     def _force_redraw(self):
-        """Fuerza un repintado completo de la ventana."""
+        """Fuerza un repintado completo de la ventana (fix fondo negro customtkinter)."""
         try:
-            # Usar wm_attributes para forzar redraw a nivel de Windows
-            if sys.platform == "win32":
-                self.wm_attributes("-alpha", 0.99)
-                self.update_idletasks()
-                self.wm_attributes("-alpha", 1.0)
-            self.configure(fg_color=C["bg"])
+            w = self.winfo_width()
+            h = self.winfo_height()
+            if w <= 1 or h <= 1:
+                return
+            # Micro-resize: fuerza a Windows a repintar toda la ventana
+            self.geometry(f"{w+1}x{h}")
+            self.update_idletasks()
+            self.geometry(f"{w}x{h}")
             self.update_idletasks()
         except Exception:
             pass
@@ -3693,6 +3696,139 @@ print(resp.json())"""
 
     def _show_download(self):
         self._show_frame("Descargar")
+
+    def _show_about(self):
+        self._show_frame("Acerca de")
+
+    def _build_about(self, parent):
+        f = ctk.CTkFrame(parent, fg_color=C["bg"], corner_radius=0)
+        sc = ctk.CTkScrollableFrame(f, fg_color=C["bg"], corner_radius=0)
+        sc.pack(fill="both", expand=True, padx=0, pady=0)
+
+        def _section(title):
+            ctk.CTkFrame(sc, height=1, fg_color=C["border"]).pack(fill="x", padx=24, pady=(18, 0))
+            ctk.CTkLabel(sc, text=title,
+                         font=ctk.CTkFont("Consolas", 10, "bold"),
+                         text_color=C["sub"]).pack(anchor="w", padx=28, pady=(6, 8))
+
+        def _card():
+            c = ctk.CTkFrame(sc, fg_color=C["card"], corner_radius=10)
+            c.pack(fill="x", padx=20, pady=(0, 8))
+            return c
+
+        def _row(card, label, value, value_color=None):
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=4)
+            ctk.CTkLabel(row, text=label,
+                         font=ctk.CTkFont("Consolas", 12),
+                         text_color=C["sub"], width=160, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=value,
+                         font=ctk.CTkFont("Consolas", 12),
+                         text_color=value_color or C["text"], anchor="w").pack(side="left")
+
+        def _link_row(card, label, url):
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=4)
+            ctk.CTkLabel(row, text=label,
+                         font=ctk.CTkFont("Consolas", 12),
+                         text_color=C["sub"], width=160, anchor="w").pack(side="left")
+            btn = ctk.CTkButton(row, text=url,
+                                fg_color="transparent", hover_color=C["card2"],
+                                text_color=C["accent2"],
+                                font=ctk.CTkFont("Consolas", 12),
+                                anchor="w", height=24,
+                                command=lambda u=url: __import__("webbrowser").open(u))
+            btn.pack(side="left")
+
+        # ── Header ────────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(sc, fg_color="transparent")
+        hdr.pack(fill="x", padx=24, pady=(28, 4))
+        ctk.CTkLabel(hdr, text="⚡ LlamaStation",
+                     font=ctk.CTkFont("Consolas", 26, "bold"),
+                     text_color=C["accent2"]).pack(side="left")
+        ctk.CTkLabel(hdr, text=f"  {APP_VERSION}",
+                     font=ctk.CTkFont("Consolas", 14),
+                     text_color=C["dim"]).pack(side="left", pady=6)
+
+        ctk.CTkLabel(sc, text="AI Model Workstation — llama.cpp GUI for Windows",
+                     font=ctk.CTkFont("Consolas", 12),
+                     text_color=C["sub"]).pack(anchor="w", padx=28, pady=(0, 4))
+
+        # ── App info ──────────────────────────────────────────────────────
+        _section("APLICACIÓN")
+        c = _card()
+        _row(c, "Versión",   APP_VERSION,  C["accent2"])
+        _row(c, "Licencia",  "MIT — libre para uso personal y comercial", C["green"])
+        _row(c, "Plataforma","Windows 10 / 11")
+        _row(c, "Python",    "3.10+")
+        ctk.CTkFrame(c, height=4, fg_color="transparent").pack()
+
+        # ── Backends / créditos ───────────────────────────────────────────
+        _section("BACKENDS Y CRÉDITOS")
+
+        c2 = _card()
+        ctk.CTkLabel(c2, text="⚡  llama.cpp  —  backend oficial",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c2,
+                     text="LLM inference engine en C/C++. Creado por Georgi Gerganov y la comunidad ggml-org.\n"
+                          "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+        _link_row(c2, "Repositorio", "https://github.com/ggml-org/llama.cpp")
+        ctk.CTkFrame(c2, height=8, fg_color="transparent").pack()
+
+        c3 = _card()
+        ctk.CTkLabel(c3, text="🔬  llama-cpp-turboquant  —  fork TurboQuant (TheTom)",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c3,
+                     text="Fork experimental de llama.cpp con cuantización TurboQuant del KV cache (turbo2/3/4).\n"
+                          "Permite contextos mucho más largos con mínima pérdida de calidad.\n"
+                          "Basado en TurboQuant (arXiv:2504.19874, ICLR 2026) por Zirlin et al.\n"
+                          "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors / TheTom",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+        _link_row(c3, "Repositorio", "https://github.com/TheTom/llama-cpp-turboquant")
+        _link_row(c3, "Paper TurboQuant", "https://arxiv.org/abs/2504.19874")
+        ctk.CTkFrame(c3, height=8, fg_color="transparent").pack()
+
+        # ── Licencia MIT completa ─────────────────────────────────────────
+        _section("AVISO DE LICENCIA (MIT)")
+        lc = _card()
+        mit_text = (
+            "MIT License\n\n"
+            "LlamaStation — Copyright © 2024-2026\n\n"
+            "Se concede permiso, de forma gratuita, a cualquier persona que obtenga una copia\n"
+            "de este software y los archivos de documentación asociados, para utilizar el\n"
+            "software sin restricciones, incluyendo sin limitación los derechos de usar, copiar,\n"
+            "modificar, fusionar, publicar, distribuir, sublicenciar y/o vender copias del\n"
+            "software, sujeto a las siguientes condiciones:\n\n"
+            "El aviso de copyright anterior y este aviso de permiso deben incluirse en todas\n"
+            "las copias o partes sustanciales del software.\n\n"
+            "EL SOFTWARE SE PROPORCIONA «TAL CUAL», SIN GARANTÍA DE NINGÚN TIPO.\n\n"
+            "──────────────────────────────────────────────\n"
+            "Este software utiliza llama.cpp y llama-cpp-turboquant, ambos bajo licencia MIT.\n"
+            "MIT License — Copyright © 2023-2026 The ggml authors\n"
+            "https://github.com/ggml-org/llama.cpp/blob/master/LICENSE"
+        )
+        tb = ctk.CTkTextbox(lc, fg_color=C["input"], text_color=C["sub"],
+                             font=ctk.CTkFont("Consolas", 11),
+                             height=220, corner_radius=8, wrap="word")
+        tb.pack(fill="x", padx=14, pady=12)
+        tb.insert("1.0", mit_text)
+        tb.configure(state="disabled")
+
+        def _copy_license():
+            f.clipboard_clear(); f.clipboard_append(mit_text)
+        ctk.CTkButton(lc, text="📋 Copiar licencia", width=140, height=28,
+                       fg_color=C["card2"], hover_color=C["border"],
+                       text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
+                       corner_radius=6, command=_copy_license).pack(anchor="e", padx=14, pady=(0, 10))
+
+        # Spacer
+        ctk.CTkFrame(sc, height=24, fg_color="transparent").pack()
+        return f
 
 def _run_headless(model_path: str, port: str, host: str):
     """

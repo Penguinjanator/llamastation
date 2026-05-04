@@ -133,6 +133,8 @@ Download the latest release from the [Releases](../../releases) page, unzip, and
 4. Hit **▶ Start server** — the VRAM bars will fill up as the model loads
 5. Start chatting
 
+> **Don't have llama.cpp yet?** No problem — use the **⬆ Update llama.cpp** button at the bottom of the sidebar. It downloads and installs the latest official release automatically. On first run it acts as an installer; on subsequent runs it checks for updates.
+
 ---
 
 ## Multi-GPU Setup (2x RTX 3060, etc.)
@@ -207,6 +209,21 @@ Open `llamaforge_i18n.py`, copy the `"en"` block, rename it to your language cod
 ## Contributing
 
 PRs welcome. The codebase is intentionally kept in a small number of files to make it easy to understand and modify. If you add features, please update both `"es"` and `"en"` blocks in `llamaforge_i18n.py`.
+
+---
+
+## Credits & Third-party licenses
+
+LlamaStation is a GUI frontend. The actual inference is powered by these open-source projects:
+
+| Project | Author | License | What it does |
+|---|---|---|---|
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Georgi Gerganov / ggml-org | MIT | Core LLM inference engine (official backend) |
+| [llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) | TheTom | MIT | llama.cpp fork with TurboQuant KV cache compression (turbo2/3/4) |
+
+TurboQuant is based on the paper [TurboQuant (arXiv:2504.19874, ICLR 2026)](https://arxiv.org/abs/2504.19874) by Zirlin et al.
+
+Both backends are MIT licensed — `Copyright © 2023-2026 The ggml authors`. Full license text is included in the **⚖️ Acerca de** tab inside the app.
 
 ---
 

@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo   LlamaForge - Instalador
+echo   LlamaStation - Instalador
 echo ========================================
 echo.
 
@@ -9,19 +9,19 @@ cd /d "%~dp0"
 echo Directorio: %~dp0
 echo.
 
-:: Verificar que llama_gui.py existe aqui
-if not exist "llama_gui.py" (
-    echo ERROR: No se encuentra llama_gui.py en esta carpeta.
-    echo Pon llama_gui.py en: %~dp0
+:: Verificar que llamastation.py existe aqui
+if not exist "llamastation.py" (
+    echo ERROR: No se encuentra llamastation.py en esta carpeta.
+    echo Pon llamastation.py en: %~dp0
     echo.
     pause
     exit /b 1
 )
 
-:: Verificar que llamaforge_i18n.py existe aqui
-if not exist "llamaforge_i18n.py" (
-    echo ERROR: No se encuentra llamaforge_i18n.py en esta carpeta.
-    echo Pon llamaforge_i18n.py en: %~dp0
+:: Verificar que llamastation_i18n.py existe aqui
+if not exist "llamastation_i18n.py" (
+    echo ERROR: No se encuentra llamastation_i18n.py en esta carpeta.
+    echo Pon llamastation_i18n.py en: %~dp0
     echo.
     pause
     exit /b 1
@@ -40,16 +40,16 @@ py -m pip install customtkinter requests tkinterdnd2 --quiet
 
 echo.
 echo ========================================
-echo   Lanzando LlamaForge...
+echo   Lanzando LlamaStation...
 echo ========================================
 echo.
 
-py llama_gui.py 2> error_log.txt
+py llamastation.py 2> error_log.txt
 type error_log.txt
 
 echo.
 echo ========================================
-echo   LlamaForge se cerro con error:  %errorlevel%
+echo   LlamaStation se cerro con error:  %errorlevel%
 echo ========================================
 echo.
 pause

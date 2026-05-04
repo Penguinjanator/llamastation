@@ -3,7 +3,7 @@ LlamaStation — Model Downloader
 Descargador de modelos GGUF desde Hugging Face, estilo LM Studio.
 Usa la API pública de HF (sin autenticación para modelos públicos).
 
-Integración: importa ModelDownloaderFrame y añádelo como tab en LlamaForge.
+Integración: importa ModelDownloaderFrame y añádelo como tab en LlamaStation.
 """
 
 import customtkinter as ctk
@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 
 try:
-    from llamaforge_i18n import T
+    from llamastation_i18n import T
 except ImportError:
     def T(key, **kwargs):
         # Fallback si no está el archivo i18n
@@ -262,7 +262,7 @@ def get_model_files(repo_id):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FRAME PRINCIPAL — se embebe como tab en LlamaForge
+#  FRAME PRINCIPAL — se embebe como tab en LlamaStation
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ModelDownloaderFrame(ctk.CTkFrame):
@@ -1036,14 +1036,14 @@ class DownloadTask:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  INSTRUCCIONES DE INTEGRACIÓN EN llama_gui.py
+#  INSTRUCCIONES DE INTEGRACIÓN EN llamastation.py
 # ══════════════════════════════════════════════════════════════════════════════
 """
-CÓMO INTEGRAR EN llama_gui.py:
+CÓMO INTEGRAR EN llamastation.py:
 ================================
 
 1. Al principio del archivo, añade:
-   from llamaforge_downloader import ModelDownloaderFrame
+   from llamastation_downloader import ModelDownloaderFrame
 
 2. En _build_tabs(), añade el nuevo frame:
    self.frames = {

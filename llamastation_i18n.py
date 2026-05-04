@@ -1,5 +1,5 @@
 """
-LlamaForge — Internacionalización (i18n)
+LlamaStation — Internacionalización (i18n)
 Añade un idioma nuevo: copia el bloque "en" y traduce los valores.
 """
 
@@ -167,7 +167,7 @@ STRINGS = {
         "saved_msg":            "Archivo guardado en:\n",
         "err_save":             "No se pudo guardar:\n",
         "err_read":             "No se pudo leer",
-        "downloader_missing":   "llamaforge_downloader.py no encontrado.\nPon el archivo en la misma carpeta.",
+        "downloader_missing":   "llamastation_downloader.py no encontrado.\nPon el archivo en la misma carpeta.",
         "attach_image":         "Adjuntar imagen",
         "attach_files":         "Adjuntar archivo(s)",
         "save_generated":       "Guardar",
@@ -405,7 +405,7 @@ STRINGS = {
         "saved_msg":            "File saved at:\n",
         "err_save":             "Could not save:\n",
         "err_read":             "Could not read",
-        "downloader_missing":   "llamaforge_downloader.py not found.\nPlace the file in the same folder.",
+        "downloader_missing":   "llamastation_downloader.py not found.\nPlace the file in the same folder.",
         "attach_image":         "Attach image",
         "attach_files":         "Attach file(s)",
         "save_generated":       "Save",
@@ -481,7 +481,7 @@ STRINGS = {
     },
 }
 
-# Idioma activo — se actualiza desde LlamaForge al cambiar
+# Idioma activo — se actualiza desde LlamaStation al cambiar
 _LANG = "es"
 
 def set_lang(lang: str):

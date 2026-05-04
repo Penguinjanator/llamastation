@@ -83,10 +83,10 @@ Most llama.cpp frontends are either too simple or too complicated. LlamaStation 
 
 ```bash
 # Interactive model selector
-python llama_gui.py --no-gui
+python llamastation.py --no-gui
 
 # Direct launch
-python llama_gui.py --no-gui --model C:\models\qwen3.gguf --port 8080
+python llamastation.py --no-gui --model C:\models\qwen3.gguf --port 8080
 ```
 
 ---
@@ -112,7 +112,7 @@ pip install customtkinter requests Pillow
 git clone https://github.com/YOUR_USERNAME/llamastation
 cd llamastation
 pip install customtkinter requests Pillow
-python llama_gui.py
+python llamastation.py
 ```
 
 Or just double-click `iniciar_llamastation.bat` — it installs dependencies and launches automatically.
@@ -154,7 +154,7 @@ LlamaStation has first-class multi-GPU support. In the model load dialog:
 | ⚡ Official llama.cpp | Standard build — CUDA, Vulkan, CPU |
 | 🔬 TurboQuant (TheTom fork) | Asymmetric KV cache quantization — save VRAM with minimal quality loss |
 
-**Adding your own fork** is two lines of code — edit the `BACKENDS` dict in `llama_gui.py` and point it to your `llama-server.exe`. Any fork that compiles from llama.cpp works out of the box.
+**Adding your own fork** is two lines of code — edit the `BACKENDS` dict in `llamastation.py` and point it to your `llama-server.exe`. Any fork that compiles from llama.cpp works out of the box.
 
 ```python
 BACKENDS = {
@@ -189,26 +189,26 @@ See the **API Docs** tab inside the app for more examples.
 
 ```
 llamastation/
-├── llama_gui.py              # Main application
-├── llamaforge_downloader.py  # HuggingFace model downloader
-├── llamaforge_i18n.py        # Translations (ES/EN)
+├── llamastation.py              # Main application
+├── llamastation_downloader.py  # HuggingFace model downloader
+├── llamastation_i18n.py        # Translations (ES/EN)
 ├── llamastation_icon.ico     # App icon
 ├── iniciar_llamastation.bat  # Windows launcher
-├── llamaforge_profiles.json  # Per-model settings (auto-generated)
-└── llamaforge_settings.json  # App settings (auto-generated)
+├── llamastation_profiles.json  # Per-model settings (auto-generated)
+└── llamastation_settings.json  # App settings (auto-generated)
 ```
 
 ---
 
 ## Adding a Language
 
-Open `llamaforge_i18n.py`, copy the `"en"` block, rename it to your language code (e.g. `"fr"`), translate the values, and open a PR. That's it — no other files need to change.
+Open `llamastation_i18n.py`, copy the `"en"` block, rename it to your language code (e.g. `"fr"`), translate the values, and open a PR. That's it — no other files need to change.
 
 ---
 
 ## Contributing
 
-PRs welcome. The codebase is intentionally kept in a small number of files to make it easy to understand and modify. If you add features, please update both `"es"` and `"en"` blocks in `llamaforge_i18n.py`.
+PRs welcome. The codebase is intentionally kept in a small number of files to make it easy to understand and modify. If you add features, please update both `"es"` and `"en"` blocks in `llamastation_i18n.py`.
 
 ---
 

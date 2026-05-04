@@ -32,7 +32,7 @@ def _setup_dnd(widget, callback):
         pass
 from pathlib import Path
 from datetime import datetime
-from llamaforge_i18n import T, set_lang, get_lang
+from llamastation_i18n import T, set_lang, get_lang
 
 # Flag para ocultar ventanas de consola en Windows al lanzar subprocesos
 _NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
@@ -79,8 +79,8 @@ THEMES = {
 # Se actualiza al iniciar segun settings
 C = dict(THEMES["dark"])
 
-PROFILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamaforge_profiles.json")
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamaforge_settings.json")
+PROFILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_profiles.json")
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_settings.json")
 
 APP_VERSION = "v2.3.0"
 
@@ -609,8 +609,41 @@ class LoadModelDialog(ctk.CTkToplevel):
 #  MODAL DE ACTUALIZACIÓN DE llama.cpp (solo backend oficial)
 # ══════════════════════════════════════════════════════════════════════════
 
-LLAMA_CPP_OFFICIAL_DIR = r"C:\llama.cpp"
-GITHUB_API_LATEST      = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+LLAMA_CPP_OFFICIAL_DIR   = r"C:\llama.cpp"
+LLAMA_CPP_TURBOQUANT_DIR = r"C:\llama-turboquant"
+GITHUB_API_LATEST        = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+
+def _tq_find_asset(assets, cuda_mm, cuda_maj):
+    """Busca el zip de TurboQuant en los releases de TheTom.
+    El asset se llama turboquant-plus-tqp-vX.Y.Z-windows-x64-cudaXX.X.zip
+    Nunca coger assets del oficial llama.cpp (llama-bXXXX-...).
+    """
+    # Primero: buscar específicamente "turboquant" en el nombre
+    for a in assets:
+        n = a["name"].lower()
+        if "turboquant" in n and n.endswith(".zip") and "windows" in n:
+            return a
+    # Fallback: cualquier zip que NO sea del oficial (no empiece por "llama-b")
+    for a in assets:
+        n = a["name"].lower()
+        if n.endswith(".zip") and not n.startswith("llama-b") and not n.startswith("cudart-llama"):
+            return a
+    return None
+
+BACKEND_META = {
+    "⚡ Oficial  (llama.cpp)": {
+        "label":    "llama.cpp oficial",
+        "dir":      LLAMA_CPP_OFFICIAL_DIR,
+        "api":      "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
+        "asset_fn": None,
+    },
+    "🔬 TurboQuant  (TheTom fork)": {
+        "label":    "TurboQuant (TheTom)",
+        "dir":      LLAMA_CPP_TURBOQUANT_DIR,
+        "api":      "https://api.github.com/repos/TheTom/llama-cpp-turboquant/releases/latest",
+        "asset_fn": _tq_find_asset,
+    },
+}
 
 def _extract_build_number(raw_output):
     """
@@ -689,11 +722,16 @@ def _find_cudart_asset(assets, cuda_mm, cuda_maj):
 
 
 class UpdateDialog(ctk.CTkToplevel):
-    """Modal de actualización de llama.cpp (solo el fork oficial, no TheTom ni otros forks)."""
+    """Modal de actualización — soporta cualquier backend definido en BACKEND_META."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, backend_key=None):
         super().__init__(parent)
-        self.title("Actualizar llama.cpp")
+        if backend_key is None or backend_key not in BACKEND_META:
+            backend_key = "⚡ Oficial  (llama.cpp)"
+        self._meta        = BACKEND_META[backend_key]
+        self._backend_key = backend_key
+
+        self.title(f"Actualizar {self._meta['label']}")
         self.geometry("620x500")
         self.resizable(False, False)
         self.configure(fg_color=C["bg"])
@@ -704,17 +742,16 @@ class UpdateDialog(ctk.CTkToplevel):
         self._thread    = None
 
         self._build()
-        # Arranca la comprobación automáticamente al abrir
         self.after(200, self._start_check)
 
     def _build(self):
         # ── Header ────────────────────────────────────────────────────
         hdr = ctk.CTkFrame(self, fg_color=C["panel"], corner_radius=0, height=56)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="⬆  Actualizar llama.cpp",
+        ctk.CTkLabel(hdr, text=f"⬆  Actualizar {self._meta['label']}",
                      font=ctk.CTkFont("Consolas", 15, "bold"),
                      text_color=C["accent2"]).pack(side="left", padx=20, pady=14)
-        ctk.CTkLabel(hdr, text="solo backend oficial · forks no afectados",
+        ctk.CTkLabel(hdr, text=self._backend_key,
                      font=ctk.CTkFont("Consolas", 10),
                      text_color=C["dim"]).pack(side="right", padx=16)
 
@@ -814,10 +851,12 @@ class UpdateDialog(ctk.CTkToplevel):
         self.after(0, lambda: self._log(f"  Instalado: {current_ver}"))
 
         # Consultar GitHub
-        self.after(0, lambda: self._log("→ Consultando GitHub..."))
+        api_url = self._meta["api"]
+        repo = "/".join(api_url.split("/")[4:6])
+        self.after(0, lambda: self._log(f"→ Consultando GitHub ({repo})..."))
         self.after(0, lambda: self._set_progress(0.1, "Consultando GitHub..."))
         try:
-            resp = requests.get(GITHUB_API_LATEST,
+            resp = requests.get(api_url,
                                 headers={"User-Agent": "LlamaStation-Updater"},
                                 timeout=20)
             resp.raise_for_status()
@@ -832,9 +871,14 @@ class UpdateDialog(ctk.CTkToplevel):
         self.after(0, lambda: self.lbl_latest.configure(text=tag))
         self.after(0, lambda: self._log(f"  Última release: {tag}"))
 
-        # Buscar assets
-        asset = _find_best_asset(assets, cuda_mm, cuda_maj)
-        cudart = _find_cudart_asset(assets, cuda_mm, cuda_maj)
+        # Buscar assets — usar asset_fn custom si existe, si no el estándar
+        asset_fn = self._meta.get("asset_fn")
+        if asset_fn:
+            asset  = asset_fn(assets, cuda_mm, cuda_maj)
+            cudart = None  # TheTom no tiene cudart separado
+        else:
+            asset  = _find_best_asset(assets, cuda_mm, cuda_maj)
+            cudart = _find_cudart_asset(assets, cuda_mm, cuda_maj)
 
         if not asset:
             self.after(0, lambda: self._log("✗ No se encontró asset compatible para tu CUDA/Windows/x64"))
@@ -852,13 +896,29 @@ class UpdateDialog(ctk.CTkToplevel):
             self.after(0, lambda: self._log("  Cudart: no disponible (se omite)"))
         self.after(0, lambda: self._log(f"  Descarga total estimada: {total_mb:.1f} MB"))
 
-        # ¿Ya está al día? — comparamos número de build (ej. b9006 → 9006)
+        # ¿Ya está al día?
+        # Para backends con tag tipo "b9019" comparamos número de build.
+        # Para backends con tag tipo "tqp-v0.1.1" usamos un version.txt
+        # que guardamos nosotros al instalar.
         up_to_date = False
+        install_dir = self._meta["dir"]
+        version_file = os.path.join(install_dir, "llamastation_version.txt")
         m_tag = re.search(r"b(\d+)", tag)
         if m_tag and current_build is not None:
+            # Tag con número de build (oficial llama.cpp)
             up_to_date = current_build >= int(m_tag.group(1))
+        elif os.path.isfile(version_file):
+            # Tag semántico (TheTom tqp-v0.x.x) — comparar con version.txt
+            try:
+                saved_tag = open(version_file).read().strip()
+                up_to_date = (saved_tag == tag)
+                if not up_to_date:
+                    self.after(0, lambda s=saved_tag: self._log(f"  Versión instalada (LlamaStation): {s}"))
+            except Exception:
+                up_to_date = False
         else:
-            up_to_date = tag.lower() in current_ver.lower()
+            # Sin version.txt y sin número de build → no podemos confirmar → ofrecer instalar
+            up_to_date = False
 
         if up_to_date:
             self.after(0, lambda: self._log(f"\n✓ Ya tienes la última versión ({tag})."))
@@ -889,12 +949,13 @@ class UpdateDialog(ctk.CTkToplevel):
         self._thread.start()
 
     def _install_thread(self):
-        asset   = self._pending_asset
-        cudart  = self._pending_cudart
-        tag     = self._pending_tag
-        tmp_dir = tempfile.mkdtemp(prefix="llamastation_upd_")
-        main_zip   = os.path.join(tmp_dir, "llama_main.zip")
-        cudart_zip = os.path.join(tmp_dir, "llama_cudart.zip") if cudart else None
+        asset       = self._pending_asset
+        cudart      = self._pending_cudart
+        tag         = self._pending_tag
+        install_dir = self._meta["dir"]
+        tmp_dir     = tempfile.mkdtemp(prefix="llamastation_upd_")
+        main_zip    = os.path.join(tmp_dir, "llama_main.zip")
+        cudart_zip  = os.path.join(tmp_dir, "llama_cudart.zip") if cudart else None
 
         try:
             # ─ Descarga principal ────────────────────────────────────
@@ -911,32 +972,32 @@ class UpdateDialog(ctk.CTkToplevel):
                 if self._cancelled: return
 
             # ─ Backup ────────────────────────────────────────────────
-            self.after(0, lambda: self._log(f"→ Haciendo backup de {LLAMA_CPP_OFFICIAL_DIR}..."))
+            self.after(0, lambda: self._log(f"→ Haciendo backup de {install_dir}..."))
             self.after(0, lambda: self._set_progress(0.82, "Haciendo backup..."))
-            if os.path.isdir(LLAMA_CPP_OFFICIAL_DIR):
-                backup_name = f"{LLAMA_CPP_OFFICIAL_DIR}_backup_{datetime.now():%Y%m%d_%H%M}"
+            if os.path.isdir(install_dir):
+                backup_name = f"{install_dir}_backup_{datetime.now():%Y%m%d_%H%M}"
                 try:
-                    os.rename(LLAMA_CPP_OFFICIAL_DIR, backup_name)
+                    os.rename(install_dir, backup_name)
                     self.after(0, lambda: self._log(f"  Backup: {backup_name}"))
                 except Exception as e:
                     self.after(0, lambda: self._log(f"  ⚠ Backup falló: {e} (continuando de todos modos)"))
 
             # ─ Extraer principal ────────────────────────────────────
-            self.after(0, lambda: self._log(f"→ Extrayendo en {LLAMA_CPP_OFFICIAL_DIR}..."))
+            self.after(0, lambda: self._log(f"→ Extrayendo en {install_dir}..."))
             self.after(0, lambda: self._set_progress(0.86, "Extrayendo..."))
-            os.makedirs(LLAMA_CPP_OFFICIAL_DIR, exist_ok=True)
+            os.makedirs(install_dir, exist_ok=True)
             with zipfile.ZipFile(main_zip, "r") as zf:
-                zf.extractall(LLAMA_CPP_OFFICIAL_DIR)
+                zf.extractall(install_dir)
 
             # Aplanar subcarpeta si el zip la mete dentro de una carpeta
-            subdirs = [d for d in os.scandir(LLAMA_CPP_OFFICIAL_DIR) if d.is_dir()]
+            subdirs = [d for d in os.scandir(install_dir) if d.is_dir()]
             if len(subdirs) == 1:
                 sub = subdirs[0].path
                 server_in_sub  = os.path.isfile(os.path.join(sub, "llama-server.exe"))
-                server_in_root = os.path.isfile(os.path.join(LLAMA_CPP_OFFICIAL_DIR, "llama-server.exe"))
+                server_in_root = os.path.isfile(os.path.join(install_dir, "llama-server.exe"))
                 if server_in_sub and not server_in_root:
                     for item in os.listdir(sub):
-                        shutil.move(os.path.join(sub, item), LLAMA_CPP_OFFICIAL_DIR)
+                        shutil.move(os.path.join(sub, item), install_dir)
                     shutil.rmtree(sub, ignore_errors=True)
 
             # ─ Extraer cudart encima ─────────────────────────────────
@@ -949,16 +1010,16 @@ class UpdateDialog(ctk.CTkToplevel):
                     zf.extractall(cudart_tmp)
                 for root_d, _, files in os.walk(cudart_tmp):
                     for fname in files:
-                        shutil.copy2(os.path.join(root_d, fname), LLAMA_CPP_OFFICIAL_DIR)
+                        shutil.copy2(os.path.join(root_d, fname), install_dir)
                 shutil.rmtree(cudart_tmp, ignore_errors=True)
 
             # ─ Verificar ────────────────────────────────────────────
             self.after(0, lambda: self._set_progress(0.97, "Verificando..."))
-            server_exe = os.path.join(LLAMA_CPP_OFFICIAL_DIR, "llama-server.exe")
+            server_exe = os.path.join(install_dir, "llama-server.exe")
             has_server = os.path.isfile(server_exe)
-            has_cuda   = os.path.isfile(os.path.join(LLAMA_CPP_OFFICIAL_DIR, "ggml-cuda.dll"))
+            has_cuda   = os.path.isfile(os.path.join(install_dir, "ggml-cuda.dll"))
             has_cudart = any(f.name.startswith("cudart") and f.name.endswith(".dll")
-                             for f in os.scandir(LLAMA_CPP_OFFICIAL_DIR) if f.is_file())
+                             for f in os.scandir(install_dir) if f.is_file())
 
             self.after(0, lambda: self._log(
                 f"\n{'✓' if has_server else '✗'} llama-server.exe\n"
@@ -967,7 +1028,13 @@ class UpdateDialog(ctk.CTkToplevel):
             ))
 
             if has_server:
-                self.after(0, lambda: self._log(f"\n✓ llama.cpp {tag} instalado correctamente."))
+                # Guardar tag instalado para comparaciones futuras (backends con versionado semántico)
+                try:
+                    with open(os.path.join(install_dir, "llamastation_version.txt"), "w") as vf:
+                        vf.write(tag)
+                except Exception:
+                    pass
+                self.after(0, lambda: self._log(f"\n✓ {self._meta['label']} {tag} instalado correctamente."))
                 self.after(0, lambda: self._set_progress(1.0, f"✓ {tag} instalado"))
                 self.after(0, lambda: self.btn_update.configure(
                     text="✓ Instalado", state="disabled",
@@ -1736,15 +1803,18 @@ class LlamaStation(ctk.CTk):
                                        text_color=C["sub"])
         self.ver_label.pack(side="bottom", anchor="w", padx=14, pady=(0, 12))
 
-        # Botón actualizar llama.cpp (solo backend oficial, nunca TheTom ni otros forks)
-        self.btn_update_llama = ctk.CTkButton(
-            sb, text=T("update_llama"),
-            fg_color=C["card2"], hover_color=C["border"],
-            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
-            height=32, corner_radius=8,
-            command=self._open_update_dialog
-        )
-        self.btn_update_llama.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
+        # Botones de actualización — uno por cada backend en BACKEND_META
+        self._update_btns = {}
+        for bkey, bmeta in reversed(list(BACKEND_META.items())):
+            btn = ctk.CTkButton(
+                sb, text=f"⬆  {bmeta['label']}",
+                fg_color=C["card2"], hover_color=C["border"],
+                text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
+                height=32, corner_radius=8,
+                command=lambda k=bkey: self._open_update_dialog(k)
+            )
+            btn.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
+            self._update_btns[bkey] = btn
 
         # Botón de tema claro/oscuro
         cur_theme = self.settings.get("theme", "dark")
@@ -2803,7 +2873,7 @@ class LlamaStation(ctk.CTk):
         if not hasattr(self, "headless_cmd_box"):
             return
         if self.current_model:
-            cmd = f'python llama_gui.py --no-gui --model "{self.current_model}"'
+            cmd = f'python llamastation.py --no-gui --model "{self.current_model}"'
             port = self.settings.get("port", "8080")
             if port != "8080":
                 cmd += f" --port {port}"
@@ -3322,11 +3392,12 @@ class LlamaStation(ctk.CTk):
                 self.port_label.configure(text=T("srv_port", port=port))
         except: pass
 
-    def _open_update_dialog(self):
-        """Abre el modal de actualización (solo llama.cpp oficial, nunca forks)."""
-        dlg = UpdateDialog(self)
+    def _open_update_dialog(self, backend_key=None):
+        """Abre el modal de actualización para el backend indicado."""
+        if backend_key is None:
+            backend_key = "⚡ Oficial  (llama.cpp)"
+        dlg = UpdateDialog(self, backend_key=backend_key)
         self.wait_window(dlg)
-        # Re-detectar versión instalada por si se actualizó
         self._detect_llama_version()
 
     def _toggle_theme(self):
@@ -3352,49 +3423,60 @@ class LlamaStation(ctk.CTk):
 
     def _silent_update_check(self):
         """
-        Al arrancar, consulta silenciosamente GitHub.
-        Si hay nueva versión disponible, resalta el botón de actualización.
-        No molesta al usuario con popups.
+        Al arrancar, consulta silenciosamente GitHub para cada backend.
+        Si hay nueva versión disponible, resalta el botón correspondiente.
         """
-        try:
-            resp = requests.get(GITHUB_API_LATEST,
-                                headers={"User-Agent": "LlamaStation-Updater"},
-                                timeout=10)
-            if resp.status_code != 200:
-                return
-            tag = resp.json().get("tag_name", "")  # ej: "b9006"
-            if not tag:
-                return
+        for bkey, bmeta in BACKEND_META.items():
+            try:
+                resp = requests.get(bmeta["api"],
+                                    headers={"User-Agent": "LlamaStation-Updater"},
+                                    timeout=10)
+                if resp.status_code != 200:
+                    continue
+                tag = resp.json().get("tag_name", "")
+                if not tag:
+                    continue
 
-            exe = os.path.join(LLAMA_CPP_OFFICIAL_DIR, "llama-server.exe")
-            if not os.path.isfile(exe):
-                self.after(0, lambda t=tag: self._mark_update_available(t))
-                return
+                exe = os.path.join(bmeta["dir"], "llama-server.exe")
+                if not os.path.isfile(exe):
+                    self.after(0, lambda k=bkey, t=tag: self._mark_update_available(k, t))
+                    continue
 
-            r2 = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=5, **_NOWIN)
-            ver_line = r2.stdout + r2.stderr
+                r2 = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=5, **_NOWIN)
+                ver_line = r2.stdout + r2.stderr
 
-            m_tag = re.search(r"b(\d+)", tag)
-            if not m_tag:
-                return
+                m_tag = re.search(r"b(\d+)", tag)
+                if m_tag:
+                    # Oficial: comparar número de build
+                    build_latest    = int(m_tag.group(1))
+                    build_installed = _extract_build_number(ver_line)
+                    if build_installed is None:
+                        continue
+                    if build_latest > build_installed:
+                        self.after(0, lambda k=bkey, t=tag: self._mark_update_available(k, t))
+                else:
+                    # Tag semántico (tqp-v0.x.x): comparar con version.txt
+                    version_file = os.path.join(bmeta["dir"], "llamastation_version.txt")
+                    if os.path.isfile(version_file):
+                        try:
+                            saved_tag = open(version_file).read().strip()
+                            if saved_tag != tag:
+                                self.after(0, lambda k=bkey, t=tag: self._mark_update_available(k, t))
+                        except Exception:
+                            pass
+                    else:
+                        # Sin version.txt → instalado manualmente → amarillo
+                        self.after(0, lambda k=bkey, t=tag: self._mark_update_available(k, t))
+            except Exception:
+                pass
 
-            build_latest    = int(m_tag.group(1))
-            build_installed = _extract_build_number(ver_line)
-
-            if build_installed is None:
-                # No podemos determinar la versión instalada → no mostrar aviso
-                return
-            if build_latest > build_installed:
-                self.after(0, lambda t=tag: self._mark_update_available(t))
-            # Si instalado >= latest: ya al día, botón queda gris
-        except Exception:
-            pass
-
-    def _mark_update_available(self, tag):
-        """Pinta el botón de actualización en amarillo para indicar que hay novedad."""
-        if hasattr(self, "btn_update_llama"):
-            self.btn_update_llama.configure(
-                text=f"⬆  {tag}",
+    def _mark_update_available(self, backend_key, tag):
+        """Pinta el botón del backend en amarillo si hay actualización disponible."""
+        btn = self._update_btns.get(backend_key)
+        if btn:
+            meta = BACKEND_META.get(backend_key, {})
+            btn.configure(
+                text=f"⬆  {meta.get('label', backend_key)}  {tag}",
                 fg_color=C["yellow"], hover_color="#d97706",
                 text_color="#0f0f13",
             )
@@ -3657,9 +3739,9 @@ print(resp.json())"""
         hl_box.pack(fill="x", padx=14, pady=12)
         hl_txt = (
             "# Arrancar sin abrir la ventana — usa el perfil guardado del modelo\n"
-            "python llama_gui.py --no-gui --model C:\\models\\qwen3.gguf\n\n"
+            "python llamastation.py --no-gui --model C:\\models\\qwen3.gguf\n\n"
             "# Sobreescribir puerto y host\n"
-            "python llama_gui.py --no-gui --model C:\\models\\qwen3.gguf --port 8081 --host 0.0.0.0"
+            "python llamastation.py --no-gui --model C:\\models\\qwen3.gguf --port 8081 --host 0.0.0.0"
         )
         hl_box.insert("1.0", hl_txt)
         hl_box.configure(state="disabled")
@@ -3681,7 +3763,7 @@ print(resp.json())"""
 
     def _build_downloader(self, parent):
         try:
-            from llamaforge_downloader import ModelDownloaderFrame
+            from llamastation_downloader import ModelDownloaderFrame
             models_dir = self.settings.get("models_dir", str(Path.home() / "models"))
             frame = ModelDownloaderFrame(parent, colors=C, models_dir=models_dir)
             self._downloader_frame = frame
@@ -3851,7 +3933,7 @@ def _run_headless(model_path: str, port: str, host: str):
     exe = settings.get("server_path", find_llama_server())
     if not exe or not os.path.isfile(exe):
         print(f"[LlamaStation] ERROR: No se encontró llama-server.exe\n"
-              f"  Configura la ruta en llamaforge_settings.json → \"server_path\"")
+              f"  Configura la ruta en llamastation_settings.json → \"server_path\"")
         sys.exit(1)
 
     if not os.path.isfile(model_path):
@@ -3936,7 +4018,7 @@ def _run_headless(model_path: str, port: str, host: str):
 
 if __name__ == "__main__":
     # ── Modo headless ─────────────────────────────────────────────────────
-    # Uso: python llama_gui.py --no-gui --model ruta/modelo.gguf [--port 8080] [--host 127.0.0.1]
+    # Uso: python llamastation.py --no-gui --model ruta/modelo.gguf [--port 8080] [--host 127.0.0.1]
     import argparse
     parser = argparse.ArgumentParser(prog="LlamaStation", add_help=True)
     parser.add_argument("--no-gui",  action="store_true", help="Arranca sin ventana gráfica")
@@ -3960,8 +4042,8 @@ if __name__ == "__main__":
 
             if not gguf_files:
                 print(f"[LlamaStation] No se encontraron modelos .gguf en: {models_dir}")
-                print(f"  Configura la carpeta en LlamaForge → Servidor → models_dir")
-                print(f"  O usa: python llama_gui.py --no-gui --model <ruta_completa.gguf>")
+                print(f"  Configura la carpeta en LlamaStation → Servidor → models_dir")
+                print(f"  O usa: python llamastation.py --no-gui --model <ruta_completa.gguf>")
                 sys.exit(1)
 
             print("""

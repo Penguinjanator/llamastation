@@ -41,7 +41,7 @@
 
 ## Why LlamaStation?
 
-Most llama.cpp frontends are either too simple or too complicated. LlamaStation gives you **LM Studio-level UX** with **full parameter control** — designed for power users running custom hardware.
+Most llama.cpp frontends sacrifice control for simplicity or the other way around. LlamaStation gives you both — a clean interface with full access to every parameter, designed for power users who want to get the most out of their hardware.
 
 - **No telemetry. No accounts. No subscriptions.** 100% local, 100% yours.
 - Built specifically for **multi-GPU setups** with per-GPU VRAM monitoring
@@ -235,5 +235,5 @@ MIT — do whatever you want with it.
 
 <p align="center">
   Made with ❤️ for the local AI community<br/>
-  <sub>Not affiliated with Ollama, LM Studio, or any AI company</sub>
+  <sub>Not affiliated with any AI company</sub>
 </p>

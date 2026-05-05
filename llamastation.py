@@ -2951,6 +2951,9 @@ class LlamaStation(ctk.CTk):
         # (el fork activa un cache de hasta 8 GB por defecto)
         if "llama-turboquant" in exe.replace("\\", "/"):
             args += ["--cache-ram", "0"]
+        # Deshabilitar reasoning_content en el stream para compatibilidad con
+        # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
+        args += ["--reasoning-format", "none"]
         ex = str(p.get("extra_args","")).strip()
         if ex: args.extend(ex.split())
         return args
@@ -3969,6 +3972,9 @@ def _run_headless(model_path: str, port: str, host: str):
     if ts: args += ["--tensor-split", ts]
     if "llama-turboquant" in exe.replace("\\", "/"):
         args += ["--cache-ram", "0"]
+    # Deshabilitar reasoning_content en el stream para compatibilidad con
+    # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
+    args += ["--reasoning-format", "none"]
     ex = str(p.get("extra_args", "")).strip()
     if ex: args.extend(ex.split())
 

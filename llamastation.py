@@ -1973,7 +1973,7 @@ class LlamaStation(ctk.CTk):
                        font=ctk.CTkFont("Consolas", 11), width=70,
                        command=self._clear_chat).pack(side="right", padx=4)
 
-        # Toggle thinking
+        # Toggle thinking (mostrar/ocultar thinking en UI)
         self.thinking_var = tk.BooleanVar(value=True)
         self.btn_thinking = ctk.CTkButton(
             hdr, text=T("thinking_on"), width=130, height=30,
@@ -1982,6 +1982,17 @@ class LlamaStation(ctk.CTk):
             command=self._toggle_thinking
         )
         self.btn_thinking.pack(side="right", padx=(0, 8), pady=10)
+
+        # Toggle enable_thinking (activa/desactiva thinking en el modelo via chat_template_kwargs)
+        self.enable_thinking_var = tk.BooleanVar(value=True)
+        self.btn_enable_thinking = ctk.CTkButton(
+            hdr, text=T("enable_thinking_on"), width=110, height=30,
+            fg_color=C["card2"], hover_color=C["border"],
+            text_color=C["accent2"],
+            font=ctk.CTkFont("Consolas", 11, "bold"),
+            command=self._toggle_enable_thinking
+        )
+        self.btn_enable_thinking.pack(side="right", padx=(0, 4), pady=10)
 
         # Toggle web search
         self.websearch_var = tk.BooleanVar(value=False)
@@ -2081,6 +2092,38 @@ class LlamaStation(ctk.CTk):
             self.btn_thinking.configure(text=T("thinking_off"),
                                         fg_color=C["card2"],
                                         text_color=C["sub"])
+
+    def _toggle_enable_thinking(self):
+        self.enable_thinking_var.set(not self.enable_thinking_var.get())
+        if self.enable_thinking_var.get():
+            self.btn_enable_thinking.configure(
+                text=T("enable_thinking_on"),
+                fg_color=C["card2"],
+                text_color=C["accent2"],
+            )
+        else:
+            self.btn_enable_thinking.configure(
+                text=T("enable_thinking_off"),
+                fg_color=C["card2"],
+                text_color=C["yellow"],
+            )
+        # Si el servidor esta corriendo, reiniciarlo para que el cambio
+        # afecte a todos los clientes (chat, OpenClaw, etc.)
+        if self.server_running:
+            self._log(f"[{datetime.now():%H:%M:%S}] Reiniciando servidor (cambio thinking mode)...")
+            self._restart_for_thinking()
+
+    def _restart_for_thinking(self):
+        """Para el servidor y lo vuelve a arrancar con el nuevo chat_template_kwargs."""
+        def _do():
+            self.after(0, lambda: self.stop_server())
+            for _ in range(40):
+                time.sleep(0.25)
+                if not self.server_running:
+                    break
+            time.sleep(0.5)
+            self.after(0, lambda: self.start_server())
+        threading.Thread(target=_do, daemon=True).start()
 
     def _toggle_websearch(self):
         self.websearch_var.set(not self.websearch_var.get())
@@ -2521,6 +2564,7 @@ class LlamaStation(ctk.CTk):
                     "repeat_penalty": float(p.get("repeat_penalty", 1.1)),
                     "seed":           int(p.get("seed", -1)),
                     "stream": True,
+                    "chat_template_kwargs": {"enable_thinking": bool(self.enable_thinking_var.get())},
                 }
                 if use_web and tool_round < max_tool_rounds:
                     payload["tools"] = WEB_TOOL
@@ -2954,6 +2998,11 @@ class LlamaStation(ctk.CTk):
         # Deshabilitar reasoning_content en el stream para compatibilidad con
         # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
         args += ["--reasoning-format", "none"]
+        # Thinking mode: inyectar chat_template_kwargs para que afecte a todos los clientes
+        enable_thinking = getattr(self, "enable_thinking_var", None)
+        if enable_thinking is not None:
+            val = "true" if enable_thinking.get() else "false"
+            args += ["--chat-template-kwargs", f'{{"enable_thinking":{val}}}']
         ex = str(p.get("extra_args","")).strip()
         if ex: args.extend(ex.split())
         return args

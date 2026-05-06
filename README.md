@@ -57,7 +57,9 @@ Most llama.cpp frontends sacrifice control for simplicity or the other way aroun
 - English / Spanish UI (more languages easy to add)
 - Collapsible sidebars
 - Chat history with session management
-- Thinking mode toggle (for reasoning models like Qwen3, DeepSeek-R1)
+- **Thinking mode controls** — two independent toggles:
+  - **👁 Razonamiento** — show/hide the reasoning block in the chat UI
+  - **🧠 Think ON / ⚡ Think OFF** — enable or disable model thinking entirely via `chat_template_kwargs`. Works for all connected clients (chat, OpenAI-compatible API, external agents). Automatically restarts the server when toggled. Compatible with TurboQuant fork.
 - Web search via DuckDuckGo (no API key needed)
 - Vision support — attach images to chat (multimodal models)
 - File attachment — send code files directly to the model

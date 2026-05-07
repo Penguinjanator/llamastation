@@ -2596,7 +2596,7 @@ class LlamaStation(ctk.CTk):
             messagebox.showwarning(T("warn_stopped"), T("warn_stopped_msg"))
             return
         txt = self.chat_input.get("1.0", "end").strip()
-        if not txt and not self._attached_image and not self._attached_file:
+        if not txt and not self._attached_image and not self._attached_files:
             return
         self.chat_input.delete("1.0", "end")
 

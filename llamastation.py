@@ -93,7 +93,7 @@ DEFAULT_PROFILE = {
     "kv_cache_offload": True, "keep_in_memory": False, "embeddings": False,
     "kv_type": "f16", "kv_type_v": "f16",
     "rope_freq_base": 0.0, "rope_freq_scale": 0.0,
-    "extra_args": "", "system_prompt": "", "mmproj": "",
+    "extra_args": "", "system_prompt": "", "mmproj": "", "mmproj_disable": False,
     "split_mode": "layer", "tensor_split": "",
 }
 
@@ -493,6 +493,17 @@ class LoadModelDialog(ctk.CTkToplevel):
                        text_color=C["dim"], font=ctk.CTkFont("Consolas", 13),
                        command=lambda: mm_var.set("")
                        ).pack(side="left", padx=(4, 0))
+        # Switch: deshabilitar mmproj
+        dis_row = ctk.CTkFrame(c, fg_color="transparent")
+        dis_row.pack(fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(dis_row, text=T("mmproj_disable"),
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["sub"]
+                     ).pack(side="left")
+        _mmproj_dis_var = tk.BooleanVar(value=False)
+        self._vars["mmproj_disable"] = _mmproj_dis_var
+        ctk.CTkSwitch(dis_row, variable=_mmproj_dis_var, text="",
+                       fg_color=C["input"], progress_color=C["accent"],
+                       button_color=C["accent2"]).pack(side="right")
 
     def _sec_extra(self, s):
         self._title(s, T("sec_extra"))
@@ -1304,11 +1315,33 @@ class ModelBrowserDialog(ctk.CTkToplevel):
                       command=lambda path=m["path"]: self._select(path)
                       ).pack(side="right")
 
+        ctk.CTkButton(inner, text=T("delete_model"), width=32, height=32,
+                      fg_color="transparent", hover_color="#5a1a1a",
+                      text_color=C["dim"], font=ctk.CTkFont("Consolas", 13),
+                      command=lambda path=m["path"], r=row, sz=size_str: self._delete_model(path, r, sz)
+                      ).pack(side="right", padx=(0, 4))
+
         # Click en toda la fila también selecciona
         for w in [row, inner, left_col]:
             w.bind("<Button-1>", lambda e, path=m["path"]: self._select(path))
             w.bind("<Enter>", lambda e, r=row: r.configure(fg_color=C["card2"]))
             w.bind("<Leave>", lambda e, r=row: r.configure(fg_color=C["card"]))
+
+    def _delete_model(self, path, row_widget, size_str):
+        name = os.path.basename(path)
+        if not messagebox.askyesno(
+            T("delete_model_confirm_title"),
+            T("delete_model_confirm_msg", name=name, size=size_str or "?")
+        ):
+            return
+        try:
+            os.remove(path)
+            row_widget.destroy()
+            self._models = [m for m in self._models if m["path"] != path]
+            self.count_label.configure(text=f"{len(self._models)} modelos")
+            messagebox.showinfo(T("delete_model_confirm_title"), T("delete_model_ok"))
+        except Exception as e:
+            messagebox.showerror(T("delete_model_confirm_title"), T("delete_model_err", err=str(e)))
 
     def _select(self, path):
         self.result_path = path
@@ -1329,6 +1362,242 @@ class ModelBrowserDialog(ctk.CTkToplevel):
 # ══════════════════════════════════════════════════════════════════════════
 #  APP PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  PROXY ANTHROPIC MESSAGES API → OpenAI (para Claude Code y otros clientes)
+# ══════════════════════════════════════════════════════════════════════════
+
+class AnthropicProxyServer:
+    """
+    Mini proxy HTTP que expone /v1/messages (formato Anthropic)
+    y lo traduce a /v1/chat/completions (formato OpenAI/llama.cpp).
+    Permite usar Claude Code y cualquier cliente Anthropic-compatible
+    apuntando a LlamaStation sin necesidad de instalaciones extra.
+    Puerto: llama-server port + 1 (ej: 8080 → proxy en 8081)
+    """
+
+    def __init__(self, openai_base_url: str, proxy_port: int):
+        self.openai_base_url = openai_base_url.rstrip("/")
+        self.proxy_port      = proxy_port
+        self._server         = None
+        self._thread         = None
+
+    # ── Conversión de formatos ──────────────────────────────────────────
+
+    @staticmethod
+    def _anthropic_to_openai(body: dict) -> dict:
+        """Convierte un body Anthropic Messages a formato OpenAI chat/completions."""
+        messages = []
+
+        # System prompt
+        system = body.get("system", "")
+        if isinstance(system, list):
+            system = " ".join(
+                b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if system:
+            messages.append({"role": "system", "content": system})
+
+        # Mensajes
+        for msg in body.get("messages", []):
+            role    = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Extraer texto de bloques de contenido
+                content = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            messages.append({"role": role, "content": content})
+
+        oai = {
+            "model":       body.get("model", "local"),
+            "messages":    messages,
+            "max_tokens":  body.get("max_tokens", 4096),
+            "stream":      body.get("stream", False),
+        }
+        if "temperature" in body:
+            oai["temperature"] = body["temperature"]
+        if "top_p" in body:
+            oai["top_p"] = body["top_p"]
+        return oai
+
+    @staticmethod
+    def _openai_to_anthropic(oai_resp: dict, model: str) -> dict:
+        """Convierte respuesta OpenAI a formato Anthropic Messages."""
+        choice  = oai_resp.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        content = message.get("content", "")
+        usage   = oai_resp.get("usage", {})
+        return {
+            "id":      oai_resp.get("id", "msg_proxy"),
+            "type":    "message",
+            "role":    "assistant",
+            "model":   model,
+            "content": [{"type": "text", "text": content}],
+            "stop_reason":    "end_turn",
+            "stop_sequence":  None,
+            "usage": {
+                "input_tokens":  usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
+        }
+
+    @staticmethod
+    def _stream_openai_to_anthropic(line: str, model: str) -> str:
+        """Convierte una línea SSE de OpenAI a SSE de Anthropic."""
+        if not line.startswith("data: "):
+            return ""
+        data = line[6:].strip()
+        if data == "[DONE]":
+            return "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        try:
+            chunk  = json.loads(data)
+            choice = chunk.get("choices", [{}])[0]
+            delta  = choice.get("delta", {})
+            text   = delta.get("content", "")
+            if text:
+                payload = json.dumps({
+                    "type":  "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text}
+                })
+                return f"event: content_block_delta\ndata: {payload}\n\n"
+        except Exception:
+            pass
+        return ""
+
+    # ── HTTP Handler ────────────────────────────────────────────────────
+
+    def _make_handler(self):
+        proxy = self
+
+        from http.server import BaseHTTPRequestHandler
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                pass  # silenciar logs de acceso
+
+            def _send_json(self, status: int, body: dict):
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_OPTIONS(self):
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "*")
+                self.end_headers()
+
+            def do_GET(self):
+                # Health / models pass-through
+                try:
+                    resp = requests.get(
+                        proxy.openai_base_url + self.path, timeout=5
+                    )
+                    self._send_json(resp.status_code, resp.json())
+                except Exception as e:
+                    self._send_json(503, {"error": str(e)})
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                raw    = self.rfile.read(length)
+                try:
+                    ant_body = json.loads(raw)
+                except Exception:
+                    self._send_json(400, {"error": "Invalid JSON"})
+                    return
+
+                model    = ant_body.get("model", "local")
+                oai_body = proxy._anthropic_to_openai(ant_body)
+                stream   = oai_body.get("stream", False)
+
+                try:
+                    resp = requests.post(
+                        proxy.openai_base_url + "/v1/chat/completions",
+                        json=oai_body,
+                        stream=stream,
+                        timeout=300,
+                    )
+                except Exception as e:
+                    self._send_json(503, {"error": str(e)})
+                    return
+
+                if stream:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    # Enviar mensaje de inicio Anthropic
+                    start = json.dumps({
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_proxy", "type": "message",
+                            "role": "assistant", "model": model,
+                            "content": [], "stop_reason": None,
+                            "usage": {"input_tokens": 0, "output_tokens": 0}
+                        }
+                    })
+                    self.wfile.write(f"event: message_start\ndata: {start}\n\n".encode())
+                    block_start = json.dumps({"type": "content_block_start", "index": 0,
+                                              "content_block": {"type": "text", "text": ""}})
+                    self.wfile.write(f"event: content_block_start\ndata: {block_start}\n\n".encode())
+                    try:
+                        for line in resp.iter_lines():
+                            if line:
+                                converted = proxy._stream_openai_to_anthropic(
+                                    line.decode() if isinstance(line, bytes) else line,
+                                    model
+                                )
+                                if converted:
+                                    self.wfile.write(converted.encode())
+                                    self.wfile.flush()
+                    except Exception:
+                        pass
+                    block_stop = json.dumps({"type": "content_block_stop", "index": 0})
+                    self.wfile.write(f"event: content_block_stop\ndata: {block_stop}\n\n".encode())
+                    msg_delta = json.dumps({"type": "message_delta",
+                                            "delta": {"stop_reason": "end_turn"},
+                                            "usage": {"output_tokens": 0}})
+                    self.wfile.write(f"event: message_delta\ndata: {msg_delta}\n\n".encode())
+                    self.wfile.write(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+                else:
+                    try:
+                        oai_resp  = resp.json()
+                        ant_resp  = proxy._openai_to_anthropic(oai_resp, model)
+                        self._send_json(200, ant_resp)
+                    except Exception as e:
+                        self._send_json(502, {"error": str(e)})
+
+        return Handler
+
+    # ── Start / Stop ────────────────────────────────────────────────────
+
+    def start(self):
+        from http.server import HTTPServer
+        handler = self._make_handler()
+        try:
+            self._server = HTTPServer(("127.0.0.1", self.proxy_port), handler)
+            self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+            self._thread.start()
+            return True
+        except Exception:
+            return False
+
+    def stop(self):
+        if self._server:
+            try:
+                self._server.shutdown()
+            except Exception:
+                pass
+            self._server = None
 
 class LlamaStation(ctk.CTk):
     def __init__(self):
@@ -1366,6 +1635,7 @@ class LlamaStation(ctk.CTk):
 
         self.server_process   = None
         self.server_running   = False
+        self._proxy_server    = None
         self.chat_history     = []
         self.current_model    = ""
         self.current_prof     = dict(DEFAULT_PROFILE)
@@ -1374,6 +1644,7 @@ class LlamaStation(ctk.CTk):
         self._stopping        = False   # flag de parada manual del servidor
         self._attached_image  = None    # ruta de imagen adjunta para vision
         self._attached_files  = []      # lista de archivos de texto adjuntos (py, html, etc.)
+        self._wd_var          = tk.BooleanVar(value=self.settings.get("watchdog_auto_relaunch", False))
 
         self._build_ui()
         self._check_server_on_start()
@@ -2910,6 +3181,101 @@ class LlamaStation(ctk.CTk):
                        text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
                        corner_radius=6, command=_copy_hl_srv
                        ).pack(anchor="e", padx=14, pady=(0, 10))
+
+        # ── Sección Limpiar Backups ───────────────────────────────────
+        sec(T("cleanup_backups_sec"))
+        cb_card = ctk.CTkFrame(sc, fg_color=C["card"], corner_radius=10)
+        cb_card.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(cb_card, text=T("cleanup_backups_desc"),
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
+                     justify="left").pack(anchor="w", padx=14, pady=(10, 4))
+        cb_status = ctk.CTkLabel(cb_card, text="",
+                                  font=ctk.CTkFont("Consolas", 11), text_color=C["dim"])
+        cb_status.pack(anchor="w", padx=14, pady=(0, 4))
+        cb_btn_row = ctk.CTkFrame(cb_card, fg_color="transparent")
+        cb_btn_row.pack(anchor="w", padx=14, pady=(0, 10))
+
+        def _find_backups():
+            dirs = [LLAMA_CPP_OFFICIAL_DIR, LLAMA_CPP_TURBOQUANT_DIR]
+            found = []
+            parent_dirs = set()
+            for d in dirs:
+                p = Path(d)
+                parent_dirs.add(p.parent)
+            for parent in parent_dirs:
+                if parent.exists():
+                    for item in parent.iterdir():
+                        if "_backup_" in item.name and item.is_dir():
+                            found.append(item)
+            return found
+
+        def _scan_backups():
+            backups = _find_backups()
+            if not backups:
+                cb_status.configure(text=T("cleanup_backups_none"), text_color=C["dim"])
+                del_btn.configure(state="disabled")
+            else:
+                total = sum(
+                    sum(f.stat().st_size for f in b.rglob("*") if f.is_file())
+                    for b in backups
+                )
+                size_str = f"{total/1_073_741_824:.1f} GB" if total > 1_073_741_824 else f"{total/1_048_576:.0f} MB"
+                cb_status.configure(
+                    text=T("cleanup_backups_found", n=len(backups), size=size_str),
+                    text_color=C["yellow"]
+                )
+                del_btn.configure(state="normal")
+
+        def _delete_backups():
+            backups = _find_backups()
+            if not backups:
+                return
+            if not messagebox.askyesno(
+                T("cleanup_backups_sec"),
+                f"¿Borrar {len(backups)} backup(s) permanentemente?\n\n" +
+                "\n".join(str(b) for b in backups)
+            ):
+                return
+            errors = []
+            for b in backups:
+                try:
+                    shutil.rmtree(b)
+                except Exception as e:
+                    errors.append(str(e))
+            if errors:
+                messagebox.showerror(T("cleanup_backups_sec"), "\n".join(errors))
+            else:
+                cb_status.configure(text=T("cleanup_backups_done"), text_color=C["green"])
+                del_btn.configure(state="disabled")
+
+        ctk.CTkButton(cb_btn_row, text=T("cleanup_backups_scan"), height=30,
+                       fg_color=C["card2"], hover_color=C["border"],
+                       font=ctk.CTkFont("Consolas", 11),
+                       command=_scan_backups).pack(side="left", padx=(0, 8))
+        del_btn = ctk.CTkButton(cb_btn_row, text=T("cleanup_backups_del"), height=30,
+                                 fg_color="#7a1a1a", hover_color="#5a1a1a",
+                                 font=ctk.CTkFont("Consolas", 11),
+                                 state="disabled",
+                                 command=_delete_backups)
+        del_btn.pack(side="left")
+
+        # ── Sección Watchdog ──────────────────────────────────────────
+        sec(T("watchdog_sec"))
+        wd_card = ctk.CTkFrame(sc, fg_color=C["card"], corner_radius=10)
+        wd_card.pack(fill="x", pady=(0, 8))
+        wd_row = ctk.CTkFrame(wd_card, fg_color="transparent")
+        wd_row.pack(fill="x", padx=14, pady=10)
+        ctk.CTkLabel(wd_row, text=T("watchdog_auto_relaunch"),
+                     font=ctk.CTkFont("Consolas", 12), text_color=C["text"]
+                     ).pack(side="left")
+        self._wd_var.set(self.settings.get("watchdog_auto_relaunch", False))
+        def _on_wd_toggle():
+            self.settings["watchdog_auto_relaunch"] = self._wd_var.get()
+            save_settings(self.settings)
+        ctk.CTkSwitch(wd_row, variable=self._wd_var, text="",
+                       fg_color=C["input"], progress_color=C["accent"],
+                       button_color=C["accent2"],
+                       command=_on_wd_toggle).pack(side="right")
         return f
 
     def _update_headless_cmd(self):
@@ -2943,7 +3309,8 @@ class LlamaStation(ctk.CTk):
         args  = [exe]
         if self.current_model: args += ["-m", self.current_model]
         mmproj = str(p.get("mmproj", "")).strip()
-        if mmproj and os.path.isfile(mmproj): args += ["--mmproj", mmproj]
+        mmproj_disabled = bool(p.get("mmproj_disable", False))
+        if mmproj and os.path.isfile(mmproj) and not mmproj_disabled: args += ["--mmproj", mmproj]
         args += [
             "--host", host, "--port", port,
             "-ngl",  str(int(p.get("gpu_layers",-1))),
@@ -3337,25 +3704,68 @@ class LlamaStation(ctk.CTk):
         self._update_headless_cmd()
         self._start_vram_poll()
         self._play_ready_sound()
+        # Arrancar proxy Anthropic Messages API
+        self._start_anthropic_proxy()
+
+    def _start_anthropic_proxy(self):
+        """Arranca el proxy /v1/messages en puerto+1 para Claude Code."""
+        port = int(self.settings.get("port", 8080))
+        proxy_port = port + 1
+        openai_url = f"http://127.0.0.1:{port}"
+        if self._proxy_server:
+            self._proxy_server.stop()
+        self._proxy_server = AnthropicProxyServer(openai_url, proxy_port)
+        if self._proxy_server.start():
+            self._log(f"[{datetime.now():%H:%M:%S}] ✓ Anthropic proxy :{proxy_port} (/v1/messages)")
+        else:
+            self._log(f"[{datetime.now():%H:%M:%S}] ⚠ Proxy Anthropic no pudo arrancar en :{proxy_port}")
 
     def _srv_exit(self, rc=None):
         was_running = self.server_running
         manual_stop = getattr(self, "_stopping", False)
         self._stopping = False
         self.server_running = False
+        # Parar proxy Anthropic
+        if self._proxy_server:
+            self._proxy_server.stop()
+            self._proxy_server = None
         self._set_status("Detenido", C["red"])
         self.port_label.configure(text=T("server_port"))
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self._stop_vram_poll()
-        # Solo mostrar error si fue un crash no esperado
-        if rc not in (None, 0, -1, -15, 1) and not manual_stop and not was_running:
+
+        # Detectar crash: cualquier salida no-manual con código != 0 o None-inesperado
+        is_crash = not manual_stop and (
+            (was_running) or                          # crashó estando corriendo (fix bug anterior)
+            (rc not in (None, 0, -1, -15, 1))         # falló al iniciar
+        )
+
+        if is_crash:
             last = getattr(self, "_last_log_lines", [])
-            msg = "\n".join(last[-10:]) if last else "(sin logs)"
-            self.after(100, lambda: messagebox.showerror(
-                "Error al iniciar el servidor",
-                f"El servidor se cerró con código {rc}.\n\nÚltimas líneas del log:\n\n{msg}\n\nRevisa la pestaña Logs para más detalles."
-            ))
+            log_tail = "\n".join(last[-10:]) if last else "(sin logs)"
+            rc_str = str(rc) if rc is not None else "?"
+            self._log(f"[{datetime.now():%H:%M:%S}] 💥 Servidor caído (código {rc_str})")
+
+            # ── Auto-relaunch watchdog ────────────────────────────────
+            auto_relaunch = getattr(self, "_wd_var", None)
+            if auto_relaunch and auto_relaunch.get() and self.current_model:
+                DELAY = 5
+                self._log(T("watchdog_relaunch_log", delay=DELAY))
+                self._set_status(T("watchdog_relaunching"), C["yellow"])
+                self.btn_start.configure(state="disabled")
+                self.btn_stop.configure(state="disabled")
+                def _do_relaunch():
+                    # Solo relanzar si el usuario no arrancó/paró manualmente mientras esperábamos
+                    if not self.server_running and not self.server_process:
+                        self.start_server()
+                self.after(DELAY * 1000, _do_relaunch)
+            else:
+                # Sin auto-relaunch: mostrar popup de aviso
+                self.after(100, lambda r=rc_str, m=log_tail: messagebox.showerror(
+                    T("watchdog_crashed_title"),
+                    T("watchdog_crashed_msg", rc=r, log=m)
+                ))
 
     def stop_server(self, wait=False):
         """Detiene el servidor correctamente liberando VRAM y RAM."""
@@ -3778,6 +4188,47 @@ print(resp.json())"""
 resp = requests.get("http://127.0.0.1:{port_hint}/health")
 # {{"status": "ok"}} cuando está listo
 print(resp.json())"""
+        )
+
+        # ── Anthropic Messages API (Claude Code) ─────────────────────
+        section("🤖  Anthropic Messages API (Claude Code / SDK Anthropic)")
+        ant_info = ctk.CTkFrame(sc, fg_color=C["card"], corner_radius=10)
+        ant_info.pack(fill="x", padx=20, pady=(0, 4))
+        proxy_port_hint = int(port_hint) + 1
+        ctk.CTkLabel(ant_info,
+                     text=(
+                         "  LlamaStation incluye un proxy Anthropic-compatible en:\n"
+                         f"  http://127.0.0.1:{proxy_port_hint}/v1/messages\n\n"
+                         "  Usalo con Claude Code, el SDK oficial de Anthropic, o cualquier\n"
+                         "  cliente que hable el formato Anthropic Messages API.\n"
+                         "  Se activa automaticamente al arrancar el servidor."
+                     ),
+                     font=ctk.CTkFont("Consolas", 12),
+                     text_color=C["text"], justify="left"
+                     ).pack(anchor="w", padx=14, pady=12)
+
+        endpoint_block(
+            "POST", f"/v1/messages", "Anthropic Messages API — compatible con Claude Code",
+            f"""# Variables de entorno para Claude Code
+set ANTHROPIC_BASE_URL=http://127.0.0.1:{proxy_port_hint}
+set ANTHROPIC_AUTH_TOKEN=llamastation
+set ANTHROPIC_DEFAULT_OPUS_MODEL=tu-modelo.gguf
+claude --dangerously-skip-permissions""",
+            f"""import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://127.0.0.1:{proxy_port_hint}",
+    api_key="llamastation"
+)
+
+message = client.messages.create(
+    model="local",
+    max_tokens=1024,
+    messages=[
+        {{"role": "user", "content": "Hola desde el SDK de Anthropic!"}}
+    ]
+)
+print(message.content[0].text)"""
         )
 
         # ── Headless ──────────────────────────────────────────────────

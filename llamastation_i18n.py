@@ -141,10 +141,23 @@ STRINGS = {
         "mmproj_none":     "Sin mmproj detectado — este modelo no tiene vision o ponlo manualmente.",
         "mmproj_ph":       "Ruta al archivo mmproj-*.gguf  (opcional)",
         "mmproj_select":   "Selecciona mmproj",
+        "mmproj_disable":  "Deshabilitar mmproj (ahorra VRAM, desactiva visión)",
 
         # Botones modal / browser
         "load_btn":        "Cargar  ↵",
         "cancel":          "Cancelar",
+        "delete_model":    "🗑️",
+        "delete_model_confirm_title": "Borrar modelo",
+        "delete_model_confirm_msg":   "¿Borrar permanentemente este archivo?\n\n{name}\n\n({size})",
+        "delete_model_ok":  "Modelo borrado.",
+        "delete_model_err": "Error al borrar: {err}",
+        "cleanup_backups_sec":   "🧹  Limpiar backups antiguos",
+        "cleanup_backups_desc":  "Backups de instalaciones anteriores de llama.cpp/TurboQuant que ya no son necesarios.",
+        "cleanup_backups_scan":  "Buscar backups",
+        "cleanup_backups_none":  "No se encontraron backups.",
+        "cleanup_backups_found": "{n} backup(s) encontrado(s)  •  {size} en total",
+        "cleanup_backups_del":   "Borrar todos",
+        "cleanup_backups_done":  "✓ Backups eliminados.",
         "change":          "Cambiar",
         "manual_browse":   "📂  Buscar archivo manualmente...",
         "folder_label":    "Carpeta:",
@@ -215,6 +228,14 @@ STRINGS = {
         "srv_starting":    "Iniciando...",
         "srv_port":        "puerto: {port}",
         "srv_stopped_log": "Servidor detenido. VRAM liberada.",
+
+        # ── Watchdog ─────────────────────────────────────────────────
+        "watchdog_sec":           "🛡️  Watchdog del servidor",
+        "watchdog_auto_relaunch": "Reinicar servidor automáticamente si se cae",
+        "watchdog_crashed_title": "⚠️  Servidor caído",
+        "watchdog_crashed_msg":   "El servidor se ha detenido inesperadamente (código {rc}).\n\nÚltimas líneas del log:\n\n{log}\n\nRevisa la pestaña Logs para más detalles.",
+        "watchdog_relaunch_log":  "🔄 Watchdog: reiniciando servidor en {delay}s...",
+        "watchdog_relaunching":   "Reiniciando...",
 
         # ── Sonido ───────────────────────────────────────────────────
         "sound_on":        "🔔  Sonido ON",
@@ -381,10 +402,23 @@ STRINGS = {
         "mmproj_none":     "No mmproj detected — this model has no vision, or set it manually.",
         "mmproj_ph":       "Path to mmproj-*.gguf file  (optional)",
         "mmproj_select":   "Select mmproj",
+        "mmproj_disable":  "Disable mmproj (saves VRAM, disables vision)",
 
         # Buttons modal / browser
         "load_btn":        "Load  ↵",
         "cancel":          "Cancel",
+        "delete_model":    "🗑️",
+        "delete_model_confirm_title": "Delete model",
+        "delete_model_confirm_msg":   "Permanently delete this file?\n\n{name}\n\n({size})",
+        "delete_model_ok":  "Model deleted.",
+        "delete_model_err": "Error deleting: {err}",
+        "cleanup_backups_sec":   "🧹  Clean up old backups",
+        "cleanup_backups_desc":  "Backups from previous llama.cpp/TurboQuant installations that are no longer needed.",
+        "cleanup_backups_scan":  "Scan for backups",
+        "cleanup_backups_none":  "No backups found.",
+        "cleanup_backups_found": "{n} backup(s) found  •  {size} total",
+        "cleanup_backups_del":   "Delete all",
+        "cleanup_backups_done":  "✓ Backups deleted.",
         "change":          "Change",
         "manual_browse":   "📂  Browse file manually...",
         "folder_label":    "Folder:",
@@ -455,6 +489,14 @@ STRINGS = {
         "srv_starting":    "Starting...",
         "srv_port":        "port: {port}",
         "srv_stopped_log": "Server stopped. VRAM freed.",
+
+        # ── Watchdog ─────────────────────────────────────────────────
+        "watchdog_sec":           "🛡️  Server Watchdog",
+        "watchdog_auto_relaunch": "Automatically restart server if it crashes",
+        "watchdog_crashed_title": "⚠️  Server crashed",
+        "watchdog_crashed_msg":   "The server stopped unexpectedly (code {rc}).\n\nLast log lines:\n\n{log}\n\nCheck the Logs tab for details.",
+        "watchdog_relaunch_log":  "🔄 Watchdog: restarting server in {delay}s...",
+        "watchdog_relaunching":   "Restarting...",
 
         # ── Sound ────────────────────────────────────────────────────
         "sound_on":        "🔔  Sound ON",

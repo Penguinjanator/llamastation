@@ -1064,7 +1064,11 @@ CÓMO INTEGRAR EN llamastation.py:
    ("🌐", "Descargar", self._show_download),
 
 5. Añade el método:
-   def _show_download(self): self._show_frame("Descargar")
+   def _show_download(self):
+       self._show_frame("Descargar")
+       # Fix fondo negro en downloader — forzar repintado tras mostrar el frame
+       self.after(20, self._force_redraw)
+       self.after(100, self._force_redraw)
 
 6. Opcional: cuando el usuario descarga un modelo, puedes escuchar el evento
    y actualizar el campo de modelo automáticamente. El on_done del DownloadTask

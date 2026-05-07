@@ -6,7 +6,7 @@
 <p align="center"><b>AI Model Workstation — llama.cpp GUI for Windows</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v2.3.0-7c6af7?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-v2.4.0-7c6af7?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square&logo=windows"/>
   <img src="https://img.shields.io/badge/backend-llama.cpp-green?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-orange?style=flat-square"/>
@@ -78,6 +78,8 @@ Most llama.cpp frontends sacrifice control for simplicity or the other way aroun
 - Continuous batching, Flash Attention, KV cache offload
 - Asymmetric KV cache (different types for K and V — TurboQuant)
 - Auto-update llama.cpp from GitHub
+- **🛡️ Server Watchdog** — detects unexpected crashes (OOM, etc.) and optionally auto-relaunches the server after 5 seconds. Configurable via toggle in the Server tab.
+- **🧹 Backup cleanup** — each llama.cpp update creates a backup of the previous installation. The Server tab shows total backup size and lets you delete them all at once.
 
 ### 📡 API & Headless
 - Built-in API Docs tab with copy-ready curl and Python examples

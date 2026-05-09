@@ -33,6 +33,12 @@ def _setup_dnd(widget, callback):
 from pathlib import Path
 from datetime import datetime
 from llamastation_i18n import T, set_lang, get_lang
+try:
+    from llamastation_voice import VoiceMixin
+    _VOICE_OK = True
+except ImportError:
+    class VoiceMixin: pass
+    _VOICE_OK = False
 
 # Flag para ocultar ventanas de consola en Windows al lanzar subprocesos
 _NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
@@ -1599,7 +1605,7 @@ class AnthropicProxyServer:
                 pass
             self._server = None
 
-class LlamaStation(ctk.CTk):
+class LlamaStation(VoiceMixin, ctk.CTk):
     def __init__(self):
         self.profiles         = load_profiles()
         self.settings         = load_settings()
@@ -1646,6 +1652,7 @@ class LlamaStation(ctk.CTk):
         self._attached_files  = []      # lista de archivos de texto adjuntos (py, html, etc.)
         self._wd_var          = tk.BooleanVar(value=self.settings.get("watchdog_auto_relaunch", False))
 
+        self._init_voice_state() if _VOICE_OK else None
         self._build_ui()
         self._check_server_on_start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2060,6 +2067,7 @@ class LlamaStation(ctk.CTk):
             ("ℹ️", "nav_info",    self._show_info),
             ("🌐", "nav_download", self._show_download),
             ("📡", "nav_api",      self._show_api_docs),
+            ("🎤", "nav_voice",    self._show_voice),
             ("⚖️", "nav_about",   self._show_about),
         ]:
             b = ctk.CTkButton(sb, text=f"  {icon}  {T(label_key)}",
@@ -2132,6 +2140,7 @@ class LlamaStation(ctk.CTk):
             "Info modelo": self._build_info(self.main),
             "Descargar":   self._build_downloader(self.main),
             "API Docs":    self._build_api_docs(self.main),
+            "Voz":         self._build_voice(self.main) if _VOICE_OK else ctk.CTkFrame(self.main),
             "Acerca de":   self._build_about(self.main),
         }
         self._show_chat()
@@ -2143,7 +2152,7 @@ class LlamaStation(ctk.CTk):
         key_map = {
             "Chat": "nav_chat", "Servidor": "nav_server", "Logs": "nav_logs",
             "Info modelo": "nav_info", "Descargar": "nav_download", "API Docs": "nav_api",
-            "Acerca de": "nav_about",
+            "Voz": "nav_voice", "Acerca de": "nav_about",
         }
         active_key = key_map.get(name, name)
         for k, b in self.nav_btns.items():
@@ -2187,6 +2196,7 @@ class LlamaStation(ctk.CTk):
     def _show_server(self): self._show_frame("Servidor")
     def _show_logs(self):   self._show_frame("Logs")
     def _show_info(self):   self._show_frame("Info modelo"); self._refresh_info()
+    def _show_voice(self):  self._show_frame("Voz")
 
     # ── Modal de modelo ───────────────────────────────────────────────────
 
@@ -2203,6 +2213,8 @@ class LlamaStation(ctk.CTk):
             self.current_prof  = dlg.result
             self.model_label.configure(text=Path(path).name)
             self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
+            self.settings["last_model"] = path
+            save_settings(self.settings)
             # Sincronizar system prompt al chat
             sp = self.current_prof.get("system_prompt", "")
             if sp and hasattr(self, "sys_entry"):
@@ -2245,32 +2257,41 @@ class LlamaStation(ctk.CTk):
                        command=self._clear_chat).pack(side="right", padx=4)
 
         # Toggle thinking (mostrar/ocultar thinking en UI)
-        self.thinking_var = tk.BooleanVar(value=True)
+        _think_show = self.settings.get("toggle_thinking_show", True)
+        self.thinking_var = tk.BooleanVar(value=_think_show)
         self.btn_thinking = ctk.CTkButton(
-            hdr, text=T("thinking_on"), width=130, height=30,
-            fg_color=C["accent"], hover_color="#6457e0",
+            hdr, text=T("thinking_on") if _think_show else T("thinking_off"),
+            width=130, height=30,
+            fg_color=C["accent"] if _think_show else C["card2"],
+            hover_color="#6457e0",
+            text_color="white" if _think_show else C["sub"],
             font=ctk.CTkFont("Consolas", 11, "bold"),
             command=self._toggle_thinking
         )
         self.btn_thinking.pack(side="right", padx=(0, 8), pady=10)
 
-        # Toggle enable_thinking (activa/desactiva thinking en el modelo via chat_template_kwargs)
-        self.enable_thinking_var = tk.BooleanVar(value=True)
+        # Toggle enable_thinking
+        _think_en = self.settings.get("toggle_thinking_enable", True)
+        self.enable_thinking_var = tk.BooleanVar(value=_think_en)
         self.btn_enable_thinking = ctk.CTkButton(
-            hdr, text=T("enable_thinking_on"), width=110, height=30,
+            hdr, text=T("enable_thinking_on") if _think_en else T("enable_thinking_off"),
+            width=110, height=30,
             fg_color=C["card2"], hover_color=C["border"],
-            text_color=C["accent2"],
+            text_color=C["accent2"] if _think_en else C["yellow"],
             font=ctk.CTkFont("Consolas", 11, "bold"),
             command=self._toggle_enable_thinking
         )
         self.btn_enable_thinking.pack(side="right", padx=(0, 4), pady=10)
 
         # Toggle web search
-        self.websearch_var = tk.BooleanVar(value=False)
+        _web = self.settings.get("toggle_websearch", False)
+        self.websearch_var = tk.BooleanVar(value=_web)
         self.btn_websearch = ctk.CTkButton(
-            hdr, text=T("web_off"), width=110, height=30,
-            fg_color=C["card2"], hover_color=C["border"],
-            text_color=C["sub"],
+            hdr, text=T("web_on") if _web else T("web_off"),
+            width=110, height=30,
+            fg_color=C["green"] if _web else C["card2"],
+            hover_color=C["border"],
+            text_color="#0f0f13" if _web else C["sub"],
             font=ctk.CTkFont("Consolas", 11, "bold"),
             command=self._toggle_websearch
         )
@@ -2339,6 +2360,8 @@ class LlamaStation(ctk.CTk):
                                               command=self._attach_file)
         self.btn_attach_file.pack(side="left", padx=(6, 0))
 
+        if _VOICE_OK:
+            self._build_voice_chat_buttons(ii)
         self.btn_send = ctk.CTkButton(ii, text=T("send"), width=90, height=44,
                                        fg_color=C["accent"], hover_color="#6457e0",
                                        font=ctk.CTkFont("Consolas", 13, "bold"),
@@ -2363,6 +2386,8 @@ class LlamaStation(ctk.CTk):
             self.btn_thinking.configure(text=T("thinking_off"),
                                         fg_color=C["card2"],
                                         text_color=C["sub"])
+        self.settings["toggle_thinking_show"] = self.thinking_var.get()
+        save_settings(self.settings)
 
     def _toggle_enable_thinking(self):
         self.enable_thinking_var.set(not self.enable_thinking_var.get())
@@ -2378,6 +2403,8 @@ class LlamaStation(ctk.CTk):
                 fg_color=C["card2"],
                 text_color=C["yellow"],
             )
+        self.settings["toggle_thinking_enable"] = self.enable_thinking_var.get()
+        save_settings(self.settings)
         # Si el servidor esta corriendo, reiniciarlo para que el cambio
         # afecte a todos los clientes (chat, OpenClaw, etc.)
         if self.server_running:
@@ -2410,6 +2437,8 @@ class LlamaStation(ctk.CTk):
                 fg_color=C["card2"],
                 text_color=C["sub"],
             )
+        self.settings["toggle_websearch"] = self.websearch_var.get()
+        save_settings(self.settings)
 
     def _stop_gen(self):
         self._stop_generation = True
@@ -2801,6 +2830,7 @@ class LlamaStation(ctk.CTk):
         t_start = time.time()
         native_in_think = False
         in_think = False
+        in_channel = False
         think_buf = ""
         timings = {}
 
@@ -2925,6 +2955,65 @@ class LlamaStation(ctk.CTk):
                             continue
 
                         full_raw += delta
+
+                        # Filtrar <|channel>thought<channel|> (Gemma4) — respeta toggle thinking
+                        if "<|channel>" in delta or in_channel:
+                            think_buf += delta
+                            if not in_channel and "<|channel>" in think_buf:
+                                before = think_buf[:think_buf.find("<|channel>")]
+                                think_buf = think_buf[think_buf.find("<|channel>") + len("<|channel>"):]
+                                in_channel = True
+                                if before:
+                                    full += before
+                                    self.after(0, lambda x=before: (
+                                        self.chat_display.configure(state="normal"),
+                                        self._insert_with_thinking(x, False),
+                                        self.chat_display.configure(state="disabled")
+                                    ))
+                                # Mostrar header "Pensando..." si toggle activo
+                                self.after(0, lambda: (
+                                    self.chat_display.configure(state="normal"),
+                                    self.chat_display._textbox.insert("end",
+                                        "\n\U0001f4ad Pensando...\n", "think_hdr")
+                                    if self.thinking_var.get() else None,
+                                    self.chat_display.configure(state="disabled")
+                                ))
+                            if in_channel and "<channel|>" in think_buf:
+                                idx_end = think_buf.find("<channel|>")
+                                think_part = think_buf[:idx_end]
+                                after = think_buf[idx_end + len("<channel|>"):]
+                                think_buf = ""
+                                in_channel = False
+                                # Mostrar contenido del thinking si toggle activo
+                                if think_part and self.thinking_var.get():
+                                    self.after(0, lambda x=think_part: (
+                                        self.chat_display.configure(state="normal"),
+                                        self._insert_with_thinking(x, True),
+                                        self.chat_display.configure(state="disabled")
+                                    ))
+                                # Cerrar header
+                                self.after(0, lambda: (
+                                    self.chat_display.configure(state="normal"),
+                                    self.chat_display._textbox.insert("end",
+                                        "\n─────────────────────\n\n", "think_hdr")
+                                    if self.thinking_var.get() else None,
+                                    self.chat_display.configure(state="disabled")
+                                ))
+                                if after:
+                                    full += after
+                                    self.after(0, lambda x=after: (
+                                        self.chat_display.configure(state="normal"),
+                                        self._insert_with_thinking(x, False),
+                                        self.chat_display.configure(state="disabled")
+                                    ))
+                            elif in_channel and self.thinking_var.get():
+                                # Mientras estamos dentro del channel, mostrar tokens como thinking
+                                self.after(0, lambda x=delta: (
+                                    self.chat_display.configure(state="normal"),
+                                    self._insert_with_thinking(x, True),
+                                    self.chat_display.configure(state="disabled")
+                                ))
+                            continue
                         think_buf += delta
 
                         # Parser <think> / </think>
@@ -3088,6 +3177,12 @@ class LlamaStation(ctk.CTk):
             self.after(0, self._save_current_session)
             # Detectar bloques de código y ofrecer descarga
             self.after(0, lambda r=full or full_raw: self._check_code_blocks(r))
+            # TTS si la respuesta fue originada por voz
+            if _VOICE_OK:
+                self.after(0, lambda r=full or full_raw: self._vchat_speak_response(r))
+            # TTS si la respuesta fue originada por voz
+            if _VOICE_OK:
+                self.after(0, lambda r=full or full_raw: self._vchat_speak_response(r))
         except Exception as e:
             self.after(0, lambda err=str(e): self._append("system", f"\u26a0 Error: {err}"))
         finally:
@@ -3846,6 +3941,18 @@ class LlamaStation(ctk.CTk):
         self.status_label.configure(text=t)
 
     def _check_server_on_start(self):
+        # Restaurar último modelo usado
+        last = self.settings.get("last_model", "")
+        if last and os.path.isfile(last):
+            self.current_model = last
+            saved_prof = self.profiles.get(last, {})
+            self.current_prof = {**DEFAULT_PROFILE, **saved_prof}
+            self.model_label.configure(text=Path(last).name)
+            sp = self.current_prof.get("system_prompt", "")
+            if sp and hasattr(self, "sys_entry"):
+                self.sys_entry.delete(0, "end")
+                self.sys_entry.insert(0, sp)
+            self._log(f"[{datetime.now():%H:%M:%S}] Modelo restaurado: {Path(last).name}")
         try:
             port = self.settings.get("port","8080")
             if requests.get(f"http://127.0.0.1:{port}/health",timeout=1).status_code==200:
@@ -3979,6 +4086,8 @@ class LlamaStation(ctk.CTk):
                 self.current_prof  = load_dlg.result
                 self.model_label.configure(text=Path(path).name)
                 self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
+                self.settings["last_model"] = path
+                save_settings(self.settings)
                 sp = self.current_prof.get("system_prompt", "")
                 if sp and hasattr(self, "sys_entry"):
                     self.sys_entry.delete(0, "end")

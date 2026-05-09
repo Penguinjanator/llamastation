@@ -6,7 +6,7 @@
 <p align="center"><b>AI Model Workstation — llama.cpp GUI for Windows</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v2.4.0-7c6af7?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-v2.5.0-7c6af7?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square&logo=windows"/>
   <img src="https://img.shields.io/badge/backend-llama.cpp-green?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-orange?style=flat-square"/>
@@ -64,6 +64,19 @@ Most llama.cpp frontends sacrifice control for simplicity or the other way aroun
 - Vision support — attach images to chat (multimodal models)
 - File attachment — send code files directly to the model
 
+### 🎤 Voice Mode (NEW in v2.5)
+Talk to your local model out loud and have it talk back, fully offline.
+- **🎙 Push-to-talk** and **🔊 Always-listening** modes integrated directly into the main chat
+- **Voice cloning** via XTTS v2 — record 12 seconds of any voice (or import a clip) and the model will reply in that voice
+- **Speech recognition** powered by faster-whisper (tiny / base / small / medium / large-v3)
+- 14 languages supported (es, en, fr, de, it, pt, pl, nl, cs, ar, zh-cn, ja, hu, ko)
+- Adjustable speech speed (0.5x – 2.0x)
+- **CUDA or CPU** for XTTS — your choice
+- Voice replies **only** when you spoke — typed messages stay text-only, like ChatGPT voice mode
+- Automatic cleanup of `<think>` and `<|channel>` tags before TTS so the model never reads internal reasoning out loud
+- Optional auto-load of voice models at app startup
+- Dedicated **Voice tab** with full configuration and a separate test chat
+
 ### ⚙️ Model Management
 - Load any `.gguf` model with a full parameter modal
 - Per-model profile saving — settings remembered automatically
@@ -104,6 +117,18 @@ python llamastation.py --no-gui --model C:\models\qwen3.gguf --port 8080
 
 ```bash
 pip install customtkinter requests Pillow
+```
+
+**Optional — for Voice Mode:**
+
+```bash
+pip install coqui-tts faster-whisper sounddevice soundfile scipy pydub
+```
+
+For CUDA acceleration on XTTS (requires torch with cuDNN 8 — torch 2.1.x recommended):
+
+```bash
+pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
 ```
 
 ---
@@ -195,6 +220,7 @@ See the **API Docs** tab inside the app for more examples.
 llamastation/
 ├── llamastation.py              # Main application
 ├── llamastation_downloader.py  # HuggingFace model downloader
+├── llamastation_voice.py       # Voice mode (Whisper + XTTS v2)
 ├── llamastation_i18n.py        # Translations (ES/EN)
 ├── llamastation_icon.ico     # App icon
 ├── iniciar_llamastation.bat  # Windows launcher
@@ -224,6 +250,8 @@ LlamaStation is a GUI frontend. The actual inference is powered by these open-so
 |---|---|---|---|
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Georgi Gerganov / ggml-org | MIT | Core LLM inference engine (official backend) |
 | [llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) | TheTom | MIT | llama.cpp fork with TurboQuant KV cache compression (turbo2/3/4) |
+| [coqui-tts (XTTS v2)](https://github.com/coqui-ai/TTS) | Coqui | CPML | Voice cloning and text-to-speech for the Voice tab |
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | SYSTRAN | MIT | Fast speech-to-text using CTranslate2 |
 
 TurboQuant is based on the paper [TurboQuant (arXiv:2504.19874, ICLR 2026)](https://arxiv.org/abs/2504.19874) by Zirlin et al.
 

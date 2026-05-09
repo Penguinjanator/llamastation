@@ -37,6 +37,7 @@ if %errorlevel% neq 0 (
 
 echo Instalando dependencias...
 py -m pip install customtkinter requests tkinterdnd2 --quiet
+py -m pip install coqui-tts faster-whisper sounddevice soundfile scipy pydub --quiet
 
 echo.
 echo ========================================

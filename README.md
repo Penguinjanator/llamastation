@@ -125,11 +125,22 @@ pip install customtkinter requests Pillow
 pip install coqui-tts faster-whisper sounddevice soundfile scipy pydub
 ```
 
-For CUDA acceleration on XTTS (requires torch with cuDNN 8 — torch 2.1.x recommended):
+> **What gets downloaded:** The first time you click **Load models** in the Voice tab, XTTS v2 (~1.8 GB) and the selected Whisper model (tiny ~75 MB / base ~145 MB / small ~465 MB) are downloaded automatically to your HuggingFace cache. This only happens once.
+
+**For CUDA acceleration on XTTS** (recommended if you have an NVIDIA GPU — significantly faster TTS):
 
 ```bash
+# Requires torch 2.1.x with cuDNN 8 — do NOT use a newer torch version
 pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
 ```
+
+> **⚠️ CUDA fix for Windows — `cudnn64_8.dll not found`:** If XTTS crashes on load with a cuDNN error, install the cuDNN wheel:
+> ```bash
+> pip install nvidia-cudnn-cu11
+> ```
+> LlamaStation adds it to the DLL search path automatically — no manual PATH editing needed.
+
+Speech recognition (faster-whisper) always runs on **CPU** so it doesn't compete with your GPU during LLM inference. XTTS can run on CPU or CUDA — selectable in the Voice tab.
 
 ---
 

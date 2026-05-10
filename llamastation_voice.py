@@ -124,8 +124,87 @@ def transcribe(audio: np.ndarray, model_name="base", language="es") -> str:
 # Flag global para interrupción de TTS
 _tts_interrupt = threading.Event()
 
+# Parámetros por defecto del modulador de voz
+VOICE_FX_DEFAULTS = {
+    "pitch":    0.0,    # semitonos  (-6 … +6)   — 0 = sin cambio
+    "reverb":   0.15,   # room size  (0 … 1)     — 0.15 = sala pequeña
+    "noise":    0.003,  # nivel      (0 … 0.02)  — muy sutil
+    "highpass": 80.0,   # Hz         (0 … 300)   — corta graves artificiales
+    "clarity":  1.2,    # boost meds (0.5 … 2.0) — ligero realce de voz
+}
+
+def apply_voice_fx(data: np.ndarray, sr: int, fx: dict) -> np.ndarray:
+    """
+    Postprocesa audio con efectos que reducen el sonido enlatado de XTTS.
+    Requiere: librosa, scipy
+    """
+    try:
+        import librosa
+        from scipy.signal import butter, sosfilt, lfilter
+        from scipy.ndimage import uniform_filter1d
+
+        data = data.astype("float32")
+
+        # 1. Pitch shift (semitonos, no afecta duración)
+        pitch = float(fx.get("pitch", 0.0))
+        if abs(pitch) > 0.05:
+            data = librosa.effects.pitch_shift(data, sr=sr, n_steps=pitch)
+
+        # 2. High-pass filter — elimina bajas frecuencias artificiales
+        hp_hz = float(fx.get("highpass", 80))
+        if hp_hz > 10:
+            sos = butter(4, hp_hz / (sr / 2), btype="high", output="sos")
+            data = sosfilt(sos, data).astype("float32")
+
+        # 3. Vocal clarity — boost de medios (1–4 kHz) con EQ de estante
+        clarity = float(fx.get("clarity", 1.0))
+        if abs(clarity - 1.0) > 0.05:
+            # Filtro de pico centrado en 2 kHz
+            f0 = 2000.0
+            Q  = 1.5
+            w0 = f0 / (sr / 2)
+            bw = w0 / Q
+            b = np.array([1 + (clarity - 1) * bw / 2,
+                          -2 * np.cos(np.pi * w0) * (1 + (clarity - 1) * bw / 2),
+                           1 - (clarity - 1) * bw / 2])
+            a = np.array([1 + bw / 2,
+                          -2 * np.cos(np.pi * w0),
+                           1 - bw / 2])
+            try:
+                data = lfilter(b, a, data).astype("float32")
+            except Exception:
+                pass
+
+        # 4. Reverb simple — convolución con IR sintética (simula sala pequeña)
+        reverb = float(fx.get("reverb", 0.0))
+        if reverb > 0.01:
+            room_samples = int(sr * reverb * 0.4)  # max ~160ms
+            if room_samples > 4:
+                decay = np.exp(-np.linspace(0, 6, room_samples)).astype("float32")
+                ir = decay * (np.random.RandomState(42).randn(room_samples).astype("float32") * 0.3 + 0.7)
+                ir /= np.abs(ir).max() + 1e-8
+                wet = np.convolve(data, ir, mode="full")[:len(data)].astype("float32")
+                data = (data * (1.0 - reverb * 0.5) + wet * reverb * 0.5).astype("float32")
+
+        # 5. Ruido de fondo muy sutil — rompe el silencio artificial
+        noise_level = float(fx.get("noise", 0.0))
+        if noise_level > 0.0001:
+            noise = np.random.RandomState(0).randn(len(data)).astype("float32") * noise_level
+            data = (data + noise).astype("float32")
+
+        # Normalizar para evitar clipping
+        peak = np.abs(data).max()
+        if peak > 0.98:
+            data = data / peak * 0.95
+
+        return data
+
+    except Exception:
+        return data  # si falla algo, devolver audio original sin cambios
+
+
 def synthesize_and_play(text: str, speaker_wav: str, language="es",
-                        speed=1.0, device="cpu"):
+                        speed=1.0, device="cpu", fx_params: dict = None):
     _tts_interrupt.clear()
     tts = get_tts(device=device)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -134,14 +213,17 @@ def synthesize_and_play(text: str, speaker_wav: str, language="es",
     tts.tts_to_file(text=text, speaker_wav=speaker_wav,
                     language=language, file_path=out, speed=1.0)
     data, sr = sf.read(out)
+    data = data.astype("float32")
     # Time-stretch con librosa: cambia tempo sin afectar tono
     if speed and abs(speed - 1.0) > 0.01:
         try:
             import librosa
-            data = librosa.effects.time_stretch(data.astype("float32"), rate=float(speed))
+            data = librosa.effects.time_stretch(data, rate=float(speed))
         except Exception:
-            # Fallback: cambiar sample rate (afecta pitch)
             sr = int(sr * float(speed))
+    # Aplicar modulador de voz si hay parámetros
+    if fx_params:
+        data = apply_voice_fx(data, sr, fx_params)
     sd.play(data, sr)
     # Esperar con chequeo de interrupción cada 100ms
     while sd.get_stream() and sd.get_stream().active:
@@ -229,6 +311,13 @@ class VoiceMixin:
             self.settings["voice_device"]  = self._voice_device_var.get()
         if hasattr(self, "_voice_sysprompt"):
             self.settings["voice_sysprompt"] = self._voice_sysprompt.get("1.0", "end").strip()
+        # Guardar parámetros del modulador de voz
+        if hasattr(self, "_vfx_pitch"):
+            self.settings["vfx_pitch"]    = round(self._vfx_pitch.get(), 2)
+            self.settings["vfx_reverb"]   = round(self._vfx_reverb.get(), 3)
+            self.settings["vfx_noise"]    = round(self._vfx_noise.get(), 4)
+            self.settings["vfx_highpass"] = int(self._vfx_highpass.get())
+            self.settings["vfx_clarity"]  = round(self._vfx_clarity.get(), 2)
         from llamastation import save_settings
         save_settings(self.settings)
 
@@ -478,6 +567,85 @@ class VoiceMixin:
                          command=self._voice_toggle_autoload
                          ).pack(anchor="w", padx=10, pady=(0, 8))
 
+        # ── Modulador de voz ─────────────────────────────────────────────────
+        sec("MODULADOR DE VOZ")
+        mod_card = card()
+
+        # Botón toggle para mostrar/ocultar sliders
+        self._vfx_expanded = False
+        self._vfx_toggle_btn = ctk.CTkButton(
+            mod_card, text="⚙ Ajustar modulador  ▸", height=30,
+            fg_color="transparent", hover_color=C["border"],
+            text_color=C["accent2"], font=ctk.CTkFont("Consolas", 11),
+            anchor="w", command=self._vfx_toggle
+        )
+        self._vfx_toggle_btn.pack(fill="x", padx=6, pady=(6, 2))
+
+        # Frame colapsable con los sliders
+        self._vfx_frame = ctk.CTkFrame(mod_card, fg_color="transparent")
+        # (no se hace pack aquí — se muestra/oculta con _vfx_toggle)
+
+        def _slider_row(parent, label, var, from_, to, steps, fmt, default_val):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=(4, 0))
+            ctk.CTkLabel(row, text=label, width=80,
+                         font=ctk.CTkFont("Consolas", 10), text_color=C["sub"],
+                         anchor="w").pack(side="left")
+            lbl = ctk.CTkLabel(row, text=fmt(default_val), width=58,
+                                font=ctk.CTkFont("Consolas", 10),
+                                text_color=C["accent"], anchor="e")
+            lbl.pack(side="right")
+            sl = ctk.CTkSlider(row, variable=var, from_=from_, to=to,
+                                number_of_steps=steps,
+                                button_color=C["accent"], progress_color=C["accent"],
+                                command=lambda v, l=lbl, f=fmt: l.configure(text=f(float(v))))
+            sl.pack(side="left", fill="x", expand=True, padx=(4, 6))
+            return sl, lbl, fmt
+
+        # Variables con valores guardados
+        self._vfx_pitch    = ctk.DoubleVar(value=float(self.settings.get("vfx_pitch",    VOICE_FX_DEFAULTS["pitch"])))
+        self._vfx_reverb   = ctk.DoubleVar(value=float(self.settings.get("vfx_reverb",   VOICE_FX_DEFAULTS["reverb"])))
+        self._vfx_noise    = ctk.DoubleVar(value=float(self.settings.get("vfx_noise",    VOICE_FX_DEFAULTS["noise"])))
+        self._vfx_highpass = ctk.DoubleVar(value=float(self.settings.get("vfx_highpass", VOICE_FX_DEFAULTS["highpass"])))
+        self._vfx_clarity  = ctk.DoubleVar(value=float(self.settings.get("vfx_clarity",  VOICE_FX_DEFAULTS["clarity"])))
+
+        _, self._vfx_lbl_pitch,    self._vfx_fmt_pitch    = _slider_row(self._vfx_frame, "Pitch (st)",
+                    self._vfx_pitch,    -6.0, 6.0, 120,
+                    lambda v: f"{float(v):+.1f} st",
+                    self._vfx_pitch.get())
+        _, self._vfx_lbl_reverb,   self._vfx_fmt_reverb   = _slider_row(self._vfx_frame, "Reverb",
+                    self._vfx_reverb,   0.0, 1.0, 100,
+                    lambda v: f"{float(v):.2f}",
+                    self._vfx_reverb.get())
+        _, self._vfx_lbl_noise,    self._vfx_fmt_noise    = _slider_row(self._vfx_frame, "Noise",
+                    self._vfx_noise,    0.0, 0.02, 100,
+                    lambda v: f"{float(v):.3f}",
+                    self._vfx_noise.get())
+        _, self._vfx_lbl_highpass, self._vfx_fmt_highpass = _slider_row(self._vfx_frame, "High-pass",
+                    self._vfx_highpass, 0.0, 300.0, 300,
+                    lambda v: f"{int(float(v))} Hz",
+                    self._vfx_highpass.get())
+        _, self._vfx_lbl_clarity,  self._vfx_fmt_clarity  = _slider_row(self._vfx_frame, "Clarity",
+                    self._vfx_clarity,  0.5, 2.0, 150,
+                    lambda v: f"{float(v):.1f}x",
+                    self._vfx_clarity.get())
+
+        # Botones Reset + Probar dentro del frame colapsable
+        vfx_btn_row = ctk.CTkFrame(self._vfx_frame, fg_color="transparent")
+        vfx_btn_row.pack(fill="x", padx=8, pady=(8, 6))
+        ctk.CTkButton(vfx_btn_row, text="↺ Reset", height=28, width=70,
+                       fg_color=C["card2"], hover_color=C["border"],
+                       text_color=C["sub"], font=ctk.CTkFont("Consolas", 10),
+                       corner_radius=6, command=self._vfx_reset
+                       ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(vfx_btn_row, text="▶ Probar con modulador", height=28,
+                       fg_color=C["accent"], hover_color="#6457e0",
+                       text_color="white", font=ctk.CTkFont("Consolas", 10),
+                       corner_radius=6, command=self._vfx_preview
+                       ).pack(side="left", fill="x", expand=True)
+
+        ctk.CTkFrame(mod_card, height=4, fg_color="transparent").pack()
+
         # ── System prompt de voz ─────────────────────────────────────────────
         sec("SYSTEM PROMPT DE VOZ")
         pc = card()
@@ -506,6 +674,81 @@ class VoiceMixin:
         return f
 
     # ── Status ───────────────────────────────────────────────────────────────
+
+    def _vfx_toggle(self):
+        """Muestra u oculta los sliders del modulador."""
+        self._vfx_expanded = not self._vfx_expanded
+        if self._vfx_expanded:
+            self._vfx_frame.pack(fill="x", padx=4, pady=(0, 4))
+            self._vfx_toggle_btn.configure(text="⚙ Ajustar modulador  ▾")
+        else:
+            self._vfx_frame.pack_forget()
+            self._vfx_toggle_btn.configure(text="⚙ Ajustar modulador  ▸")
+
+    def _vfx_reset(self):
+        """Resetea todos los sliders a los valores por defecto y actualiza los labels."""
+        for var, lbl, fmt, key in [
+            (self._vfx_pitch,    self._vfx_lbl_pitch,    self._vfx_fmt_pitch,    "pitch"),
+            (self._vfx_reverb,   self._vfx_lbl_reverb,   self._vfx_fmt_reverb,   "reverb"),
+            (self._vfx_noise,    self._vfx_lbl_noise,    self._vfx_fmt_noise,    "noise"),
+            (self._vfx_highpass, self._vfx_lbl_highpass, self._vfx_fmt_highpass, "highpass"),
+            (self._vfx_clarity,  self._vfx_lbl_clarity,  self._vfx_fmt_clarity,  "clarity"),
+        ]:
+            val = VOICE_FX_DEFAULTS[key]
+            var.set(val)
+            lbl.configure(text=fmt(val))
+
+    def _vfx_preview(self):
+        """Prueba la voz activa con los ajustes del modulador aplicados."""
+        if not self._voice_models_ok:
+            from tkinter import messagebox
+            messagebox.showinfo("Modulador", "Primero carga los modelos en la pestaña Voz.")
+            return
+        if not self._voice_active_wav:
+            from tkinter import messagebox
+            messagebox.showinfo("Modulador", "Selecciona una voz de referencia primero.")
+            return
+        lang  = self._voice_lang_var.get() if hasattr(self, "_voice_lang_var") else "es"
+        speed = float(self._voice_speed_var.get()) if hasattr(self, "_voice_speed_var") else 1.0
+        dev   = self.settings.get("voice_device", "cpu")
+        fx    = self._get_vfx_params() or VOICE_FX_DEFAULTS  # forzar fx aunque sean defaults
+        # Usar siempre fx en preview para poder probar incluso con valores default
+        fx = {
+            "pitch":    self._vfx_pitch.get(),
+            "reverb":   self._vfx_reverb.get(),
+            "noise":    self._vfx_noise.get(),
+            "highpass": self._vfx_highpass.get(),
+            "clarity":  self._vfx_clarity.get(),
+        }
+        self._voice_set_status("Generando preview…", "#fbbf24")
+        def _run():
+            try:
+                synthesize_and_play(
+                    "Esta es una prueba del modulador de voz con los ajustes actuales.",
+                    self._voice_active_wav, lang, speed, dev, fx_params=fx
+                )
+                self._voice_set_status("Listo")
+            except Exception as e:
+                self._voice_set_status(f"Error: {e}", "#f87171")
+        import threading as _t
+        _t.Thread(target=_run, daemon=True).start()
+
+    def _get_vfx_params(self) -> dict:
+        """Devuelve dict con parámetros del modulador, o None si están todos en default."""
+        if not hasattr(self, "_vfx_pitch"):
+            return None
+        params = {
+            "pitch":    self._vfx_pitch.get(),
+            "reverb":   self._vfx_reverb.get(),
+            "noise":    self._vfx_noise.get(),
+            "highpass": self._vfx_highpass.get(),
+            "clarity":  self._vfx_clarity.get(),
+        }
+        defs = VOICE_FX_DEFAULTS
+        # Si todo está en default, no aplicar (ahorra CPU)
+        if all(abs(params[k] - defs[k]) < 0.001 for k in defs):
+            return None
+        return params
 
     def _voice_set_status(self, text, color=None):
         import llamastation as _ls
@@ -783,7 +1026,8 @@ class VoiceMixin:
             lang  = self._voice_lang_var.get() if hasattr(self, "_voice_lang_var") else "es"
             speed = float(self._voice_speed_var.get()) if hasattr(self, "_voice_speed_var") else 1.0
             dev   = self.settings.get("voice_device", "cpu")
-            synthesize_and_play(reply_clean, self._voice_active_wav, lang, speed, dev)
+            synthesize_and_play(reply_clean, self._voice_active_wav, lang, speed, dev,
+                               fx_params=self._get_vfx_params())
         except Exception as e:
             self._voice_append("sistema", f"Error TTS: {e}", "err")
 
@@ -820,7 +1064,8 @@ class VoiceMixin:
                 speed = float(self._voice_speed_var.get()) if hasattr(self, "_voice_speed_var") else 1.0
                 dev   = self.settings.get("voice_device", "cpu")
                 synthesize_and_play("Hola, esta es una prueba de mi voz clonada.",
-                                    self._voice_active_wav, lang, speed, dev)
+                                    self._voice_active_wav, lang, speed, dev,
+                                    fx_params=self._get_vfx_params())
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror("Error TTS", str(e)))
         threading.Thread(target=_do, daemon=True).start()
@@ -1133,7 +1378,8 @@ class VoiceMixin:
                 dev   = self.settings.get("voice_device", "cpu")
                 self._vchat_speaking = True
                 try:
-                    synthesize_and_play(clean, self._voice_active_wav, lang, speed, dev)
+                    synthesize_and_play(clean, self._voice_active_wav, lang, speed, dev,
+                                       fx_params=self._get_vfx_params())
                 finally:
                     self._vchat_speaking = False
                     # Si escucha continua activa, resetear stop_ev para seguir escuchando

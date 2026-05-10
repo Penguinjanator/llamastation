@@ -879,7 +879,7 @@ class UpdateDialog(ctk.CTkToplevel):
             resp.raise_for_status()
             release = resp.json()
         except Exception as e:
-            self.after(0, lambda: self._log(f"✗ Error al contactar GitHub: {e}"))
+            self.after(0, lambda err=str(e): self._log(f"✗ Error al contactar GitHub: {err}"))
             self.after(0, lambda: self._set_progress(0, "Error de conexión"))
             return
 
@@ -997,7 +997,7 @@ class UpdateDialog(ctk.CTkToplevel):
                     os.rename(install_dir, backup_name)
                     self.after(0, lambda: self._log(f"  Backup: {backup_name}"))
                 except Exception as e:
-                    self.after(0, lambda: self._log(f"  ⚠ Backup falló: {e} (continuando de todos modos)"))
+                    self.after(0, lambda err=str(e): self._log(f"  ⚠ Backup falló: {err} (continuando de todos modos)"))
 
             # ─ Extraer principal ────────────────────────────────────
             self.after(0, lambda: self._log(f"→ Extrayendo en {install_dir}..."))
@@ -1062,7 +1062,7 @@ class UpdateDialog(ctk.CTkToplevel):
                 raise RuntimeError("llama-server.exe no encontrado tras la instalación")
 
         except Exception as e:
-            self.after(0, lambda: self._log(f"\n✗ Error durante la instalación: {e}"))
+            self.after(0, lambda err=str(e): self._log(f"\n✗ Error durante la instalación: {err}"))
             self.after(0, lambda: self._set_progress(0, "Error de instalación"))
             self.after(0, lambda: self.btn_cancel.configure(state="normal"))
             self.after(0, lambda: self.btn_update.configure(
@@ -2299,15 +2299,15 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
         self.chat_display = ctk.CTkTextbox(f, fg_color=C["panel"],
                                             text_color=C["text"],
-                                            font=ctk.CTkFont("Consolas", 13),
+                                            font=ctk.CTkFont("Segoe UI", 14),
                                             wrap="word", state="disabled", corner_radius=0)
         self.chat_display.pack(fill="both", expand=True)
         # Configurar tags de color para el thinking
         tb = self.chat_display._textbox
         tb.tag_config("thinking", foreground="#8b7cf8",
-                      font=("Consolas", 12, "italic"))
+                      font=("Segoe UI", 13, "italic"))
         tb.tag_config("think_hdr", foreground="#6457e0",
-                      font=("Consolas", 11, "bold italic"))
+                      font=("Segoe UI", 12, "bold italic"))
 
         sp_bar = ctk.CTkFrame(f, fg_color=C["card2"], height=38, corner_radius=0)
         sp_bar.pack(fill="x"); sp_bar.pack_propagate(False)
@@ -2335,7 +2335,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         ii.pack(fill="both", expand=True, padx=16, pady=12)
         self.chat_input = ctk.CTkTextbox(ii, height=44,
                                           fg_color=C["input"], text_color=C["text"],
-                                          font=ctk.CTkFont("Consolas", 13), corner_radius=8)
+                                          font=ctk.CTkFont("Segoe UI", 14), corner_radius=8)
         self.chat_input.pack(side="left", fill="both", expand=True)
         self.chat_input.bind("<Return>", self._enter_key)
 
@@ -4486,6 +4486,69 @@ print(message.content[0].text)"""
         _link_row(c3, "Repositorio", "https://github.com/TheTom/llama-cpp-turboquant")
         _link_row(c3, "Paper TurboQuant", "https://arxiv.org/abs/2504.19874")
         ctk.CTkFrame(c3, height=8, fg_color="transparent").pack()
+
+        # ── Voz: dependencias ─────────────────────────────────────────────
+        _section("MODO VOZ — DEPENDENCIAS")
+
+        c_voice = _card()
+        ctk.CTkLabel(c_voice, text="🎤  faster-whisper  —  reconocimiento de voz (STT)",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c_voice,
+                     text="Transcripción de voz a texto basada en Whisper de OpenAI, optimizada con CTranslate2.\n"
+                          "Modelos disponibles: tiny · base · small · medium · large-v3\n"
+                          "El modo voz siempre usa CPU (int8) para no competir con la GPU del LLM.",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 4))
+        _link_row(c_voice, "Repositorio", "https://github.com/SYSTRAN/faster-whisper")
+        ctk.CTkLabel(c_voice, text="pip install faster-whisper",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["accent2"]).pack(anchor="w", padx=16, pady=(2, 10))
+
+        c_xtts = _card()
+        ctk.CTkLabel(c_xtts, text="🗣️  coqui-tts / XTTS v2  —  síntesis de voz con clonación (TTS)",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c_xtts,
+                     text="Síntesis de voz multilingüe con clonación a partir de un clip de audio de ~12 segundos.\n"
+                          "Modelo: tts_models/multilingual/multi-dataset/xtts_v2\n"
+                          "Se descarga automáticamente (~1.8 GB) la primera vez que se carga.\n"
+                          "Puede ejecutarse en CPU o CUDA. CUDA requiere PyTorch con cuDNN 8 (torch 2.1.x).",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 4))
+        _link_row(c_xtts, "Repositorio", "https://github.com/coqui-ai/TTS")
+        ctk.CTkLabel(c_xtts, text="pip install coqui-tts",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["accent2"]).pack(anchor="w", padx=16, pady=(2, 4))
+        ctk.CTkLabel(c_xtts,
+                     text="Para CUDA (recomendado, RTX):",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"]).pack(anchor="w", padx=16)
+        ctk.CTkLabel(c_xtts,
+                     text="pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121",
+                     font=ctk.CTkFont("Consolas", 10),
+                     text_color=C["accent2"], wraplength=640, justify="left").pack(anchor="w", padx=16, pady=(0, 4))
+        ctk.CTkLabel(c_xtts,
+                     text="Si XTTS falla con CUDA y da error de cudnn64_8.dll, instala también:\n"
+                          "pip install nvidia-cudnn-cu11",
+                     font=ctk.CTkFont("Consolas", 10),
+                     text_color=C["yellow"], wraplength=640, justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+
+        c_audio = _card()
+        ctk.CTkLabel(c_audio, text="🔊  Audio — dependencias adicionales",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c_audio,
+                     text="sounddevice  —  captura y reproducción de audio en tiempo real\n"
+                          "soundfile    —  lectura/escritura de archivos WAV\n"
+                          "pydub        —  conversión de audio al importar clips (requiere ffmpeg en el PATH)\n"
+                          "scipy        —  procesado de audio (resampling)",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 4))
+        ctk.CTkLabel(c_audio,
+                     text="pip install sounddevice soundfile pydub scipy",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["accent2"]).pack(anchor="w", padx=16, pady=(0, 10))
 
         # ── Licencia MIT completa ─────────────────────────────────────────
         _section("AVISO DE LICENCIA (MIT)")

@@ -100,18 +100,26 @@ DEFAULT_PROFILE = {
     "kv_type": "f16", "kv_type_v": "f16",
     "rope_freq_base": 0.0, "rope_freq_scale": 0.0,
     "extra_args": "", "system_prompt": "", "mmproj": "", "mmproj_disable": False,
-    "split_mode": "layer", "tensor_split": "",
+    "split_mode": "layer", "tensor_split": "", "draft_model": "",
+    "draft_spec_type": "draft-simple",
+    "mtp_enabled": False, "mtp_draft_n_max": 6,
 }
 
 BACKENDS = {
     "⚡ Oficial  (llama.cpp)": r"C:\llama.cpp\llama-server.exe",
     "🔬 TurboQuant  (TheTom fork)": r"C:\llama-turboquant\llama-server.exe",
+    "🚀 MTP  (llama.cpp + PR#22673)": r"C:\llama-mtp\llama-server.exe",
+    "🐝 BeeLlama  (DFlash + TurboQuant)": r"C:\llama-bee\llama-server.exe",
+    "⚛️ AtomicChat  (TurboQuant + MTP)": r"C:\llama-atomic\llama-server.exe",
 }
 
 
 def find_llama_server():
-    # Prefer TurboQuant if available, else official
-    for c in [r"C:\llama-turboquant\llama-server.exe",
+    # Prefer AtomicChat > BeeLlama > TurboQuant > MTP > official
+    for c in [r"C:\llama-atomic\llama-server.exe",
+              r"C:\llama-bee\llama-server.exe",
+              r"C:\llama-turboquant\llama-server.exe",
+              r"C:\llama-mtp\llama-server.exe",
               r"C:\llama.cpp\llama-server.exe",
               "llama-server", "llama-server.exe",
               r"C:\llama.cpp\build\bin\Release\llama-server.exe"]:
@@ -254,6 +262,9 @@ class LoadModelDialog(ctk.CTkToplevel):
         Solo lo asigna si el usuario no tenía ya uno guardado.
         """
         if not self.model_path:
+            return
+        # Si el usuario desactivó mmproj explícitamente, no autodetectar
+        if self._vars.get("mmproj_disable") and self._vars["mmproj_disable"].get():
             return
         # Si ya hay uno guardado en el perfil, no sobreescribir
         if self._vars.get("mmproj") and self._vars["mmproj"].get().strip():
@@ -523,7 +534,91 @@ class LoadModelDialog(ctk.CTkToplevel):
                       fg_color=C["input"], text_color=C["text"],
                       font=ctk.CTkFont("Consolas", 12),
                       placeholder_text=T("extra_ph"),
-                      height=36).pack(fill="x", padx=16, pady=(0, 16))
+                      height=36).pack(fill="x", padx=16, pady=(0, 12))
+
+        # Draft Model (especulación clásica con modelo pequeño)
+        ctk.CTkLabel(c, text="Draft Model  (opcional — modelo drafter pequeño)",
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["yellow"]
+                     ).pack(anchor="w", padx=16, pady=(0, 4))
+        ctk.CTkLabel(c, text="Ruta al GGUF del modelo drafter. Usa draft-simple para backends estándar (rec.), dflash solo para BeeLlama.",
+                     font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
+                     wraplength=560, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(0, 4))
+
+        # Selector de tipo de especulación
+        spec_type_var = tk.StringVar(value="draft-simple")
+        self._vars["draft_spec_type"] = spec_type_var
+        spec_row = ctk.CTkFrame(c, fg_color="transparent")
+        spec_row.pack(fill="x", padx=16, pady=(0, 6))
+        ctk.CTkLabel(spec_row, text="Tipo:",
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["sub"]
+                     ).pack(side="left", padx=(0, 8))
+        for val, tip, col in [
+            ("draft-simple", "draft-simple  (Oficial · TurboQuant · MTP)", C["accent"]),
+            ("dflash",       "dflash  (solo BeeLlama)",                    C["yellow"]),
+        ]:
+            ctk.CTkRadioButton(spec_row, text=tip, variable=spec_type_var, value=val,
+                               fg_color=col, hover_color=C["accent2"],
+                               font=ctk.CTkFont("Consolas", 11),
+                               text_color=C["text"]).pack(side="left", padx=(0, 14))
+
+        draft_var = tk.StringVar()
+        self._vars["draft_model"] = draft_var
+        draft_row = ctk.CTkFrame(c, fg_color="transparent")
+        draft_row.pack(fill="x", padx=16, pady=(0, 16))
+        ctk.CTkEntry(draft_row, textvariable=draft_var,
+                      fg_color=C["input"], text_color=C["text"],
+                      font=ctk.CTkFont("Consolas", 12),
+                      placeholder_text="p.ej. C:\\modelos_llamaforge\\Qwen3.5-0.8B-Q8_0.gguf",
+                      height=34).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(draft_row, text="Browse", width=90, height=34,
+                       fg_color=C["card2"], hover_color=C["border"],
+                       font=ctk.CTkFont("Consolas", 12),
+                       command=lambda: draft_var.set(
+                           filedialog.askopenfilename(
+                               title="Seleccionar GGUF del drafter",
+                               filetypes=[("GGUF", "*.gguf"), ("Todos", "*.*")]
+                           ) or draft_var.get()
+                       )).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(draft_row, text="✕", width=32, height=34,
+                       fg_color="transparent", hover_color=C["card2"],
+                       text_color=C["dim"], font=ctk.CTkFont("Consolas", 13),
+                       command=lambda: draft_var.set("")
+                       ).pack(side="left", padx=(4, 0))
+
+        # ── MTP (Multi-Token Prediction) ─────────────────────────────────
+        ctk.CTkFrame(c, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(10, 0))
+        mtp_hdr = ctk.CTkFrame(c, fg_color="transparent")
+        mtp_hdr.pack(fill="x", padx=16, pady=(8, 2))
+        ctk.CTkLabel(mtp_hdr, text="🚀 MTP — Multi-Token Prediction",
+                     font=ctk.CTkFont("Consolas", 11, "bold"),
+                     text_color=C["accent2"]).pack(side="left")
+        ctk.CTkLabel(mtp_hdr,
+                     text="  ✓ Oficial · MTP · AtomicChat",
+                     font=ctk.CTkFont("Consolas", 9),
+                     text_color=C["green"]).pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(mtp_hdr,
+                     text="  ✗ TurboQuant · BeeLlama",
+                     font=ctk.CTkFont("Consolas", 9),
+                     text_color=C["red"]).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(c,
+                     text="Requiere GGUF MTP (p.ej. Qwen3.6-27B-MTP-UD-Q4_K_XL de Unsloth).\n"
+                          "Fuerza -np 1 automáticamente. Incompatible con --mmproj.",
+                     font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
+                     wraplength=560, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(0, 6))
+        mtp_sw_row = ctk.CTkFrame(c, fg_color="transparent")
+        mtp_sw_row.pack(fill="x", padx=16, pady=(0, 4))
+        mtp_en_var = tk.BooleanVar(value=False)
+        self._vars["mtp_enabled"] = mtp_en_var
+        ctk.CTkSwitch(mtp_sw_row, variable=mtp_en_var, text="Activar MTP",
+                       fg_color=C["input"], progress_color=C["accent2"],
+                       button_color=C["accent"],
+                       font=ctk.CTkFont("Consolas", 11),
+                       text_color=C["text"]).pack(side="left")
+        self._slider(c, "spec-draft-n-max  (tokens drafteados, rec. 6)",
+                     "mtp_draft_n_max", 1, 12, 1, int)
+        ctk.CTkFrame(c, height=8, fg_color="transparent").pack()
 
     # ── Widget helpers ────────────────────────────────────────────────────
 
@@ -628,6 +723,9 @@ class LoadModelDialog(ctk.CTkToplevel):
 
 LLAMA_CPP_OFFICIAL_DIR   = r"C:\llama.cpp"
 LLAMA_CPP_TURBOQUANT_DIR = r"C:\llama-turboquant"
+LLAMA_CPP_MTP_DIR        = r"C:\llama-mtp"
+LLAMA_CPP_BEE_DIR        = r"C:\llama-bee"
+LLAMA_CPP_ATOMIC_DIR     = r"C:\llama-atomic"
 GITHUB_API_LATEST        = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 
 def _tq_find_asset(assets, cuda_mm, cuda_maj):
@@ -658,6 +756,24 @@ BACKEND_META = {
         "label":    "TurboQuant (TheTom)",
         "dir":      LLAMA_CPP_TURBOQUANT_DIR,
         "api":      "https://api.github.com/repos/TheTom/llama-cpp-turboquant/releases/latest",
+        "asset_fn": _tq_find_asset,
+    },
+    "🚀 MTP  (llama.cpp + PR#22673)": {
+        "label":    "MTP (PR#22673)",
+        "dir":      LLAMA_CPP_MTP_DIR,
+        "api":      "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
+        "asset_fn": None,  # Mismo updater que el oficial
+    },
+    "🐝 BeeLlama  (DFlash + TurboQuant)": {
+        "label":    "BeeLlama (DFlash + TurboQuant)",
+        "dir":      LLAMA_CPP_BEE_DIR,
+        "api":      "https://api.github.com/repos/Anbeeld/beellama.cpp/releases/latest",
+        "asset_fn": _tq_find_asset,
+    },
+    "⚛️ AtomicChat  (TurboQuant + MTP)": {
+        "label":    "AtomicChat (TurboQuant + MTP)",
+        "dir":      LLAMA_CPP_ATOMIC_DIR,
+        "api":      "https://api.github.com/repos/AtomicBot-ai/atomic-llama-cpp-turboquant/releases/latest",
         "asset_fn": _tq_find_asset,
     },
 }
@@ -2048,15 +2164,25 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self.backend_var.set(bname)
                 break
 
-        for bname in BACKENDS:
-            rb = ctk.CTkRadioButton(sb, text=bname, variable=self.backend_var, value=bname,
-                                    fg_color=C["accent"], hover_color=C["accent2"],
-                                    font=ctk.CTkFont("Consolas", 11),
-                                    text_color=C["text"],
-                                    command=self._on_backend_change)
-            rb.pack(anchor="w", padx=14, pady=2)
+        self.backend_menu = ctk.CTkOptionMenu(
+            sb,
+            variable=self.backend_var,
+            values=list(BACKENDS.keys()),
+            fg_color=C["card2"],
+            button_color=C["accent"],
+            button_hover_color=C["accent2"],
+            dropdown_fg_color=C["card"],
+            dropdown_hover_color=C["card2"],
+            text_color=C["text"],
+            dropdown_text_color=C["text"],
+            font=ctk.CTkFont("Consolas", 11),
+            dropdown_font=ctk.CTkFont("Consolas", 11),
+            anchor="w",
+            command=lambda _: self._on_backend_change()
+        )
+        self.backend_menu.pack(fill="x", padx=14, pady=(4, 6))
 
-        ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(6, 4))
+        ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(2, 4))
         # ────────────────────────────────────────────────────────────────
 
         self.nav_btns = {}
@@ -2082,18 +2208,19 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                        text_color=C["sub"])
         self.ver_label.pack(side="bottom", anchor="w", padx=14, pady=(0, 12))
 
-        # Botones de actualización — uno por cada backend en BACKEND_META
+        # Botón de actualización — actualiza el backend seleccionado en el desplegable
         self._update_btns = {}
-        for bkey, bmeta in reversed(list(BACKEND_META.items())):
-            btn = ctk.CTkButton(
-                sb, text=f"⬆  {bmeta['label']}",
-                fg_color=C["card2"], hover_color=C["border"],
-                text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
-                height=32, corner_radius=8,
-                command=lambda k=bkey: self._open_update_dialog(k)
-            )
-            btn.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
-            self._update_btns[bkey] = btn
+        self.btn_update_backend = ctk.CTkButton(
+            sb, text="⬆  Actualizar backend",
+            fg_color=C["card2"], hover_color=C["border"],
+            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
+            height=32, corner_radius=8,
+            command=lambda: self._open_update_dialog(self.backend_var.get())
+        )
+        self.btn_update_backend.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
+        # Compatibilidad con código que espera self._update_btns
+        for bkey in BACKEND_META:
+            self._update_btns[bkey] = self.btn_update_backend
 
         # Botón de tema claro/oscuro
         cur_theme = self.settings.get("theme", "dark")
@@ -3457,6 +3584,17 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # (el fork activa un cache de hasta 8 GB por defecto)
         if "llama-turboquant" in exe.replace("\\", "/"):
             args += ["--cache-ram", "0"]
+        # Sampling — defaults del servidor para todos los clientes
+        args += ["--temp",           str(round(float(p.get("temperature", 0.7)), 4))]
+        args += ["--top-k",          str(int(p.get("top_k", 40)))]
+        args += ["--top-p",          str(round(float(p.get("top_p", 0.95)), 4))]
+        args += ["--min-p",          str(round(float(p.get("min_p", 0.05)), 4))]
+        args += ["--repeat-penalty", str(round(float(p.get("repeat_penalty", 1.1)), 4))]
+        args += ["--repeat-last-n",  str(int(p.get("repeat_last_n", 64)))]
+        seed = int(p.get("seed", -1))
+        if seed != -1: args += ["--seed", str(seed)]
+        max_tok = int(p.get("max_tokens", 2048))
+        if max_tok > 0: args += ["-n", str(max_tok)]
         # Deshabilitar reasoning_content en el stream para compatibilidad con
         # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
         args += ["--reasoning-format", "none"]
@@ -3467,6 +3605,30 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             args += ["--chat-template-kwargs", f'{{"enable_thinking":{val}}}']
         ex = str(p.get("extra_args","")).strip()
         if ex: args.extend(ex.split())
+        # Draft Model (especulación clásica con modelo pequeño)
+        draft_model = str(p.get("draft_model", "")).strip()
+        if draft_model and os.path.isfile(draft_model):
+            draft_spec = str(p.get("draft_spec_type", "draft-simple")).strip() or "draft-simple"
+            args += ["--model-draft", draft_model,
+                     "--spec-type", draft_spec,
+                     "-ngld", "99"]
+        # MTP (Multi-Token Prediction) — solo backends compatibles
+        # ✓ Oficial (llama.cpp master >= b3620), MTP (PR#22673), AtomicChat
+        # ✗ TurboQuant (fork sin MTP), BeeLlama (usa dflash propio)
+        _MTP_COMPATIBLE = ("llama-mtp", "llama-atomic", "llama.cpp")
+        _MTP_INCOMPATIBLE = ("llama-turboquant", "llama-bee")
+        exe_norm = exe.replace("\\", "/").lower()
+        _backend_ok = (
+            any(k in exe_norm for k in _MTP_COMPATIBLE) and
+            not any(k in exe_norm for k in _MTP_INCOMPATIBLE)
+        )
+        if p.get("mtp_enabled") and _backend_ok:
+            # MTP requiere exactamente -np 1
+            for i, a in enumerate(args):
+                if a == "-np" and i + 1 < len(args):
+                    args[i + 1] = "1"
+            args += ["--spec-type", "draft-mtp",
+                     "--spec-draft-n-max", str(int(p.get("mtp_draft_n_max", 6)))]
         return args
 
     def _preview_cmd(self):
@@ -4644,12 +4806,43 @@ def _run_headless(model_path: str, port: str, host: str):
     if ts: args += ["--tensor-split", ts]
     if "llama-turboquant" in exe.replace("\\", "/"):
         args += ["--cache-ram", "0"]
+    # Sampling — defaults del servidor para todos los clientes
+    args += ["--temp",           str(round(float(p.get("temperature", 0.7)), 4))]
+    args += ["--top-k",          str(int(p.get("top_k", 40)))]
+    args += ["--top-p",          str(round(float(p.get("top_p", 0.95)), 4))]
+    args += ["--min-p",          str(round(float(p.get("min_p", 0.05)), 4))]
+    args += ["--repeat-penalty", str(round(float(p.get("repeat_penalty", 1.1)), 4))]
+    args += ["--repeat-last-n",  str(int(p.get("repeat_last_n", 64)))]
+    seed = int(p.get("seed", -1))
+    if seed != -1: args += ["--seed", str(seed)]
+    max_tok = int(p.get("max_tokens", 2048))
+    if max_tok > 0: args += ["-n", str(max_tok)]
     # Deshabilitar reasoning_content en el stream para compatibilidad con
     # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
     args += ["--reasoning-format", "none"]
     ex = str(p.get("extra_args", "")).strip()
     if ex: args.extend(ex.split())
-
+    # Draft Model (BeeLlama DFlash speculative decoding)
+    draft_model = str(p.get("draft_model", "")).strip()
+    if draft_model and os.path.isfile(draft_model):
+        draft_spec = str(p.get("draft_spec_type", "draft-simple")).strip() or "draft-simple"
+        args += ["--model-draft", draft_model,
+                 "--spec-type", draft_spec,
+                 "-ngld", "99"]
+    # MTP (Multi-Token Prediction)
+    _MTP_COMPATIBLE = ("llama-mtp", "llama-atomic", "llama.cpp")
+    _MTP_INCOMPATIBLE = ("llama-turboquant", "llama-bee")
+    exe_norm = exe.replace("\\", "/").lower()
+    _backend_ok = (
+        any(k in exe_norm for k in _MTP_COMPATIBLE) and
+        not any(k in exe_norm for k in _MTP_INCOMPATIBLE)
+    )
+    if p.get("mtp_enabled") and _backend_ok:
+        for i, a in enumerate(args):
+            if a == "-np" and i + 1 < len(args):
+                args[i + 1] = "1"
+        args += ["--spec-type", "draft-mtp",
+                 "--spec-draft-n-max", str(int(p.get("mtp_draft_n_max", 6)))]
     model_name = Path(model_path).name
     pport = settings.get("port", "8080")
     phost = settings.get("host", "127.0.0.1")

@@ -27,17 +27,19 @@ if not exist "llamastation_i18n.py" (
     exit /b 1
 )
 
-:: Verificar Python
-py --version >nul 2>&1
+:: Verificar Python 3.11
+py -3.11 --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: Python no encontrado. Instala Python 3.10+ desde python.org
+    echo ERROR: Python 3.11 no encontrado. Instala Python 3.11 desde python.org
     pause
     exit /b 1
 )
 
 echo Instalando dependencias...
-py -m pip install customtkinter requests tkinterdnd2 --quiet
-py -m pip install coqui-tts faster-whisper sounddevice soundfile scipy pydub --quiet
+py -3.11 -m pip install customtkinter requests tkinterdnd2 --quiet
+py -3.11 -m pip install coqui-tts faster-whisper sounddevice soundfile scipy pydub --quiet
+py -3.11 -m pip install torch==2.1.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121 --quiet
+py -3.11 -m pip install "numpy<2" --quiet
 
 echo.
 echo ========================================
@@ -45,7 +47,7 @@ echo   Lanzando LlamaStation...
 echo ========================================
 echo.
 
-py llamastation.py 2> error_log.txt
+py -3.11 llamastation.py 2> error_log.txt
 type error_log.txt
 
 echo.

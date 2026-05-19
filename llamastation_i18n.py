@@ -12,6 +12,8 @@ STRINGS = {
         "nav_info":        "Info modelo",
         "nav_download":    "Descargar",
         "nav_api":         "API Docs",
+        "nav_voice":       "Voz",
+        "nav_about":       "Acerca de",
 
         # ── Sidebar derecha ───────────────────────────────────────────
         "loaded_model":    "MODELO CARGADO",
@@ -263,6 +265,15 @@ STRINGS = {
         "dl_downloads_lbl":"descargas",
         "dl_updated":      "Actualizado:",
         "dl_caps_warning": "⚠ Las capacidades mostradas pueden ser incompletas",
+
+        # ── MTP ──────────────────────────────────────────────────────
+        "mtp_activate":    "Activar MTP",
+        "mtp_draft_n_max": "spec-draft-n-max  (tokens drafteados, rec. 6)",
+        "mtp_manual_hint": (
+            "💡 Si el interruptor MTP no funciona con tu backend, desactívalo y usa "
+            "el recuadro de Argumentos Extra (arriba) para introducir los flags manualmente.\n"
+            "Ej. AtomicChat: --spec-type nextn --model-draft <ruta_modelo> --draft-max 4 -np 1"
+        ),
     },
 
     "en": {
@@ -273,6 +284,8 @@ STRINGS = {
         "nav_info":        "Model Info",
         "nav_download":    "Download",
         "nav_api":         "API Docs",
+        "nav_voice":       "Voice",
+        "nav_about":       "About",
 
         # ── Right sidebar ─────────────────────────────────────────────
         "loaded_model":    "LOADED MODEL",
@@ -524,6 +537,15 @@ STRINGS = {
         "dl_downloads_lbl":"downloads",
         "dl_updated":      "Updated:",
         "dl_caps_warning": "⚠ Shown capabilities may be incomplete",
+
+        # ── MTP ──────────────────────────────────────────────────────
+        "mtp_activate":    "Enable MTP",
+        "mtp_draft_n_max": "spec-draft-n-max  (draft tokens, rec. 6)",
+        "mtp_manual_hint": (
+            "💡 If the MTP toggle doesn't work with your backend, disable it and use "
+            "the Extra Arguments box (above) to set the flags manually.\n"
+            "E.g. AtomicChat: --spec-type nextn --model-draft <model_path> --draft-max 4 -np 1"
+        ),
     },
 }
 

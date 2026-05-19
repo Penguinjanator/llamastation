@@ -6,7 +6,7 @@
 <p align="center"><b>AI Model Workstation — llama.cpp GUI for Windows</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v2.5.0-7c6af7?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-v0.9-7c6af7?style=flat-square"/>
   <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square&logo=windows"/>
   <img src="https://img.shields.io/badge/backend-llama.cpp-green?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-orange?style=flat-square"/>
@@ -16,6 +16,14 @@
 <p align="center">
   A powerful, open-source GUI for running local AI models via llama.cpp — built for users who want full control over their hardware without the bloat.
 </p>
+
+---
+
+## 🧑‍💻 Built by a non-programmer, with AI
+
+I built this because I didn't want to run llama.cpp from the command line every time I wanted to chat with a local model. I just wanted something simple that worked.
+
+**100% vibe coded** — I'm not a developer by trade. Every line of this app was written with AI assistance (Claude, mostly). If you're a programmer and something makes you cringe, please be kind — PRs are very welcome.
 
 ---
 
@@ -149,7 +157,7 @@ Speech recognition (faster-whisper) always runs on **CPU** so it doesn't compete
 **Option A — Run from source (recommended for power users)**
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/llamastation
+git clone https://github.com/vico-png/llamastation
 cd llamastation
 pip install customtkinter requests Pillow
 python llamastation.py
@@ -157,23 +165,29 @@ python llamastation.py
 
 Or just double-click `iniciar_llamastation.bat` — it installs dependencies and launches automatically.
 
-**Option B — Pre-built .exe**
+**Option B — Pre-built .exe (recommended if you just want to run it)**
 
-Download the latest release from the [Releases](../../releases) page, unzip, and run `LlamaStation.exe`.
+1. Download the latest release from the [Releases](../../releases) page — it's a `.zip` file
+2. **Extract the entire folder** to wherever you want the app to live (e.g. `C:\LlamaStation\`). Don't just extract the `.exe` — the whole folder is needed
+3. Open the extracted folder and double-click `LlamaStation.exe` to launch
+4. Optional: right-click `LlamaStation.exe` → *Send to* → *Desktop (create shortcut)* for easy access
 
-> ⚠️ Windows SmartScreen may warn about an unknown publisher — this is a false positive. The source code is fully open and auditable. Click "More info" → "Run anyway", or [verify on VirusTotal](https://www.virustotal.com).
+> ⚠️ **Windows SmartScreen** may show a warning the first time — this is normal for unsigned apps. Click **"More info"** → **"Run anyway"**. The source code is fully open and auditable here on GitHub.
+
+> 💡 **llama.cpp is not included** in the release — but you don't need to find it yourself. On first launch, click the **⬆ Update llama.cpp** button at the bottom of the sidebar and the app will download and install it automatically.
 
 ---
 
 ## Quick Start
 
-1. Download or compile `llama-server.exe` from [llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases)
-2. Launch LlamaStation and go to **Server** tab — point it to your `llama-server.exe`
-3. Click **My models** → select your `.gguf` file → configure and load
-4. Hit **▶ Start server** — the VRAM bars will fill up as the model loads
-5. Start chatting
+> **New here? Start with Option B above** (pre-built .exe) and follow steps 2–5 below. llama.cpp will be installed automatically in step 2.
 
-> **Don't have llama.cpp yet?** No problem — use the **⬆ Update llama.cpp** button at the bottom of the sidebar. It downloads and installs the latest official release automatically. On first run it acts as an installer; on subsequent runs it checks for updates.
+1. Launch LlamaStation
+2. Click the **⬆ Update llama.cpp** button at the bottom of the left sidebar — this downloads and installs the inference engine automatically (only needed once)
+3. Click **Descargar modelos** → search for a model (e.g. `gemma-4`) → download it
+4. Click **Mis modelos** → select your `.gguf` file → configure and load
+5. Hit **▶ Iniciar servidor** — the VRAM bars will fill up as the model loads
+6. Start chatting
 
 ---
 
@@ -191,8 +205,10 @@ LlamaStation has first-class multi-GPU support. In the model load dialog:
 
 | Backend | Description |
 |---|---|
-| ⚡ Official llama.cpp | Standard build — CUDA, Vulkan, CPU |
-| 🔬 TurboQuant (TheTom fork) | Asymmetric KV cache quantization — save VRAM with minimal quality loss |
+| ⚡ Official llama.cpp | Standard build — CUDA, Vulkan, CPU. Supports **MTP** natively since May 2026 |
+| 🔬 TurboQuant (TheTom fork) | Asymmetric KV cache quantization — run 200k+ context on 24GB VRAM |
+| ⚛️ AtomicChat (TurboQuant + MTP) | TurboQuant + MTP combined — ~22 tok/s on dual RTX 3060 with 177k context |
+| 🐝 BeeLlama (DFlash + TurboQuant) | DFlash speculative decoding with TurboQuant — experimental |
 
 **Adding your own fork** is two lines of code — edit the `BACKENDS` dict in `llamastation.py` and point it to your `llama-server.exe`. Any fork that compiles from llama.cpp works out of the box.
 
@@ -261,6 +277,7 @@ LlamaStation is a GUI frontend. The actual inference is powered by these open-so
 |---|---|---|---|
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Georgi Gerganov / ggml-org | MIT | Core LLM inference engine (official backend) |
 | [llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) | TheTom | MIT | llama.cpp fork with TurboQuant KV cache compression (turbo2/3/4) |
+| [atomic-llama-cpp-turboquant](https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant) | AtomicBot-ai | MIT | llama.cpp fork with TurboQuant + MTP |
 | [coqui-tts (XTTS v2)](https://github.com/coqui-ai/TTS) | Coqui | CPML | Voice cloning and text-to-speech for the Voice tab |
 | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | SYSTRAN | MIT | Fast speech-to-text using CTranslate2 |
 

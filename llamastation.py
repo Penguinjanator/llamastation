@@ -88,7 +88,7 @@ C = dict(THEMES["dark"])
 PROFILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_profiles.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_settings.json")
 
-APP_VERSION = "v2.3.0"
+APP_VERSION = "v0.9"
 
 DEFAULT_PROFILE = {
     "gpu_layers": -1, "threads": 8, "threads_batch": 8,
@@ -611,13 +611,18 @@ class LoadModelDialog(ctk.CTkToplevel):
         mtp_sw_row.pack(fill="x", padx=16, pady=(0, 4))
         mtp_en_var = tk.BooleanVar(value=False)
         self._vars["mtp_enabled"] = mtp_en_var
-        ctk.CTkSwitch(mtp_sw_row, variable=mtp_en_var, text="Activar MTP",
+        ctk.CTkSwitch(mtp_sw_row, variable=mtp_en_var, text=T("mtp_activate"),
                        fg_color=C["input"], progress_color=C["accent2"],
                        button_color=C["accent"],
                        font=ctk.CTkFont("Consolas", 11),
                        text_color=C["text"]).pack(side="left")
-        self._slider(c, "spec-draft-n-max  (tokens drafteados, rec. 6)",
+        self._slider(c, T("mtp_draft_n_max"),
                      "mtp_draft_n_max", 1, 12, 1, int)
+        ctk.CTkLabel(c,
+                     text=T("mtp_manual_hint"),
+                     font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
+                     wraplength=560, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(8, 0))
         ctk.CTkFrame(c, height=8, fg_color="transparent").pack()
 
     # ── Widget helpers ────────────────────────────────────────────────────

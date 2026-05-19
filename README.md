@@ -72,7 +72,7 @@ Most llama.cpp frontends sacrifice control for simplicity or the other way aroun
 - Vision support — attach images to chat (multimodal models)
 - File attachment — send code files directly to the model
 
-### 🎤 Voice Mode (NEW in v2.5)
+### 🎤 Voice Mode
 Talk to your local model out loud and have it talk back, fully offline.
 - **🎙 Push-to-talk** and **🔊 Always-listening** modes integrated directly into the main chat
 - **Voice cloning** via XTTS v2 — record 12 seconds of any voice (or import a clip) and the model will reply in that voice
@@ -175,6 +175,8 @@ Or just double-click `iniciar_llamastation.bat` — it installs dependencies and
 > ⚠️ **Windows SmartScreen** may show a warning the first time — this is normal for unsigned apps. Click **"More info"** → **"Run anyway"**. The source code is fully open and auditable here on GitHub.
 
 > 💡 **llama.cpp is not included** in the release — but you don't need to find it yourself. On first launch, click the **⬆ Update llama.cpp** button at the bottom of the sidebar and the app will download and install it automatically.
+
+> 🎤 **Voice Mode is not included** in the pre-built .exe. If you want voice features, run from source (Option A) and install the optional dependencies listed in the Requirements section.
 
 ---
 

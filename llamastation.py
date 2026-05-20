@@ -2216,7 +2216,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # Botón de actualización — actualiza el backend seleccionado en el desplegable
         self._update_btns = {}
         self.btn_update_backend = ctk.CTkButton(
-            sb, text="⬆  Actualizar backend",
+            sb, text=T("update_llama"),
             fg_color=C["card2"], hover_color=C["border"],
             text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
             height=32, corner_radius=8,
@@ -2484,7 +2484,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.btn_attach.pack(side="left", padx=(10, 0))
 
         # Botón adjuntar archivo de texto (py, html, bat, etc.) - siempre visible
-        self.btn_attach_file = ctk.CTkButton(ii, text="📎", width=44, height=44,
+        self.btn_attach_file = ctk.CTkButton(ii, text="📁", width=44, height=44,
                                               fg_color=C["card2"], hover_color=C["border"],
                                               text_color=C["sub"],
                                               font=ctk.CTkFont(size=18),
@@ -3883,6 +3883,13 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self.sv_exe.set(bpath)
             self._log(f"[{datetime.now():%H:%M:%S}] Backend: {bname}  →  {bpath}")
             self._detect_llama_version()
+            # Resetear texto del botón de actualizar al cambiar de backend
+            if hasattr(self, "btn_update_backend"):
+                self.btn_update_backend.configure(
+                    text=T("update_llama"),
+                    fg_color=C["card2"], hover_color=C["border"],
+                    text_color=C["sub"]
+                )
         else:
             messagebox.showwarning(T("warn_backend_title"),
                 f"No se encontró el ejecutable:\n{bpath}\n\nCompila primero el fork TurboQuant.")
@@ -4654,6 +4661,32 @@ print(message.content[0].text)"""
         _link_row(c3, "Paper TurboQuant", "https://arxiv.org/abs/2504.19874")
         ctk.CTkFrame(c3, height=8, fg_color="transparent").pack()
 
+        c4 = _card()
+        ctk.CTkLabel(c4, text="⚛️  atomic-llama-cpp-turboquant  —  fork AtomicChat (TurboQuant + MTP)",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c4,
+                     text="Fork de llama.cpp con TurboQuant KV cache + especulación NextN (MTP nativo para Qwen3.x).\n"
+                          "Permite combinar contextos largos y alta velocidad de generación.\n"
+                          "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors / AtomicBot-ai",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+        _link_row(c4, "Repositorio", "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant")
+        ctk.CTkFrame(c4, height=8, fg_color="transparent").pack()
+
+        c5 = _card()
+        ctk.CTkLabel(c5, text="🐝  beellama.cpp  —  fork BeeLlama (DFlash + TurboQuant)",
+                     font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(c5,
+                     text="Fork de llama.cpp con TurboQuant KV cache + decodificación especulativa DFlash.\n"
+                          "Experimental — ideal para modelos con soporte DFlash.\n"
+                          "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors / Anbeeld",
+                     font=ctk.CTkFont("Consolas", 11),
+                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+        _link_row(c5, "Repositorio", "https://github.com/Anbeeld/beellama.cpp")
+        ctk.CTkFrame(c5, height=8, fg_color="transparent").pack()
+
         # ── Voz: dependencias ─────────────────────────────────────────────
         _section("MODO VOZ — DEPENDENCIAS")
 
@@ -4732,7 +4765,8 @@ print(message.content[0].text)"""
             "las copias o partes sustanciales del software.\n\n"
             "EL SOFTWARE SE PROPORCIONA «TAL CUAL», SIN GARANTÍA DE NINGÚN TIPO.\n\n"
             "──────────────────────────────────────────────\n"
-            "Este software utiliza llama.cpp y llama-cpp-turboquant, ambos bajo licencia MIT.\n"
+            "Este software utiliza los siguientes proyectos bajo licencia MIT:\n"
+            "llama.cpp · llama-cpp-turboquant · atomic-llama-cpp-turboquant · beellama.cpp\n"
             "MIT License — Copyright © 2023-2026 The ggml authors\n"
             "https://github.com/ggml-org/llama.cpp/blob/master/LICENSE"
         )

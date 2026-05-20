@@ -26,7 +26,7 @@ STRINGS = {
         "start_server":    "▶  Iniciar servidor",
         "stop_server":     "■  Detener",
         "backend_label":   "BACKEND",
-        "update_llama":    "⬆  Actualizar llama.cpp",
+        "update_llama":    "⬆  Actualizar backend",
         "controls":        "Controles",
 
         # ── Sidebar izquierda ─────────────────────────────────────────
@@ -298,7 +298,7 @@ STRINGS = {
         "start_server":    "▶  Start server",
         "stop_server":     "■  Stop",
         "backend_label":   "BACKEND",
-        "update_llama":    "⬆  Update llama.cpp",
+        "update_llama":    "⬆  Update / Download backend",
         "controls":        "Controls",
 
         # ── Left sidebar ──────────────────────────────────────────────

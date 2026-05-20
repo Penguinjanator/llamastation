@@ -10,20 +10,12 @@
   <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square&logo=windows"/>
   <img src="https://img.shields.io/badge/backend-llama.cpp-green?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-orange?style=flat-square"/>
-  <img src="https://img.shields.io/badge/python-3.10+-yellow?style=flat-square&logo=python"/>
+  <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square&logo=python"/>
 </p>
 
 <p align="center">
   A powerful, open-source GUI for running local AI models via llama.cpp — built for users who want full control over their hardware without the bloat.
 </p>
-
----
-
-## 🧑‍💻 Built by a non-programmer, with AI
-
-I built this because I didn't want to run llama.cpp from the command line every time I wanted to chat with a local model. I just wanted something simple that worked.
-
-**100% vibe coded** — I'm not a developer by trade. Every line of this app was written with AI assistance (Claude, mostly). If you're a programmer and something makes you cringe, please be kind — PRs are very welcome.
 
 ---
 
@@ -74,7 +66,7 @@ Most llama.cpp frontends sacrifice control for simplicity or the other way aroun
 - Collapsible sidebars
 - Chat history with session management
 - **Thinking mode controls** — two independent toggles:
-  - **👁 Razonamiento** — show/hide the reasoning block in the chat UI
+  - **👁 Reasoning** — show/hide the reasoning block in the chat UI
   - **🧠 Think ON / ⚡ Think OFF** — enable or disable model thinking entirely via `chat_template_kwargs`. Works for all connected clients (chat, OpenAI-compatible API, external agents). Automatically restarts the server when toggled. Compatible with TurboQuant fork.
 - Web search via DuckDuckGo (no API key needed)
 - Vision support — attach images to chat (multimodal models)
@@ -127,7 +119,7 @@ python llamastation.py --no-gui --model C:\models\qwen3.gguf --port 8080
 ## Requirements
 
 - Windows 10/11
-- Python 3.10+
+- Python 3.11+
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled for your hardware (CUDA, Vulkan, CPU)
 - NVIDIA GPU recommended (AMD/Intel via Vulkan also supported)
 
@@ -219,6 +211,8 @@ BACKENDS = {
 
 
 
+---
+
 ## API Usage
 
 LlamaStation exposes an OpenAI-compatible API at `http://localhost:8080/v1`. Any app that supports OpenAI works out of the box:
@@ -274,7 +268,6 @@ LlamaStation is a GUI frontend. The actual inference is powered by these open-so
 |---|---|---|---|
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Georgi Gerganov / ggml-org | MIT | Core LLM inference engine (official backend) |
 | [llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) | TheTom | MIT | llama.cpp fork with TurboQuant KV cache compression (turbo2/3/4) |
-| [atomic-llama-cpp-turboquant](https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant) | AtomicBot-ai | MIT | llama.cpp fork with TurboQuant + MTP |
 | [atomic-llama-cpp-turboquant](https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant) | AtomicBot-ai | MIT | llama.cpp fork with TurboQuant + MTP |
 | [coqui-tts (XTTS v2)](https://github.com/coqui-ai/TTS) | Coqui | CPML | Voice cloning and text-to-speech for the Voice tab |
 | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | SYSTRAN | MIT | Fast speech-to-text using CTranslate2 |

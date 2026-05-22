@@ -2115,6 +2115,12 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(10, 10))
         self._build_right_toggle_tab()
 
+        # ── Área scrollable (todo el contenido central) ────────────────
+        sb_scroll = ctk.CTkScrollableFrame(sb, fg_color="transparent", corner_radius=0)
+        sb_scroll.pack(fill="both", expand=True)
+        # A partir de aquí usamos sb_scroll como padre en lugar de sb
+        sb = sb_scroll
+
         # Modelo
         mc = ctk.CTkFrame(sb, fg_color=C["card"], corner_radius=10)
         mc.pack(fill="x", padx=12, pady=(0, 6))
@@ -2242,46 +2248,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             b.pack(fill="x", padx=8, pady=2)
             self.nav_btns[label_key] = b
 
-        self.ver_label = ctk.CTkLabel(sb, text="llama.cpp: —",
-                                       font=ctk.CTkFont("Consolas", 10),
-                                       text_color=C["sub"])
-        self.ver_label.pack(side="bottom", anchor="w", padx=14, pady=(0, 12))
-
-        # Botón de actualización — actualiza el backend seleccionado en el desplegable
-        self._update_btns = {}
-        self.btn_update_backend = ctk.CTkButton(
-            sb, text=T("update_llama"),
-            fg_color=C["card2"], hover_color=C["border"],
-            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
-            height=32, corner_radius=8,
-            command=lambda: self._open_update_dialog(self.backend_var.get())
-        )
-        self.btn_update_backend.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
-        # Compatibilidad con código que espera self._update_btns
-        for bkey in BACKEND_META:
-            self._update_btns[bkey] = self.btn_update_backend
-
-        # Botón de tema claro/oscuro
-        cur_theme = self.settings.get("theme", "dark")
-        theme_icon = T("theme_to_light") if cur_theme == "dark" else T("theme_to_dark")
-        self.btn_theme = ctk.CTkButton(
-            sb, text=theme_icon,
-            fg_color=C["card2"], hover_color=C["border"],
-            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
-            height=32, corner_radius=8,
-            command=self._toggle_theme
-        )
-        self.btn_theme.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
-
-        # Botón de idioma
-        self.btn_lang = ctk.CTkButton(
-            sb, text=T("lang_btn"),
-            fg_color=C["card2"], hover_color=C["border"],
-            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
-            height=32, corner_radius=8,
-            command=self._toggle_lang
-        )
-        self.btn_lang.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
+        ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(8, 6))
 
         # Botón de sonido
         sound_on = self.settings.get("sound", True)
@@ -2293,7 +2260,47 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             height=32, corner_radius=8,
             command=self._toggle_sound
         )
-        self.btn_sound.pack(side="bottom", fill="x", padx=12, pady=(0, 4))
+        self.btn_sound.pack(fill="x", padx=12, pady=(0, 4))
+
+        # Botón de idioma
+        self.btn_lang = ctk.CTkButton(
+            sb, text=T("lang_btn"),
+            fg_color=C["card2"], hover_color=C["border"],
+            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
+            height=32, corner_radius=8,
+            command=self._toggle_lang
+        )
+        self.btn_lang.pack(fill="x", padx=12, pady=(0, 4))
+
+        # Botón de tema claro/oscuro
+        cur_theme = self.settings.get("theme", "dark")
+        theme_icon = T("theme_to_light") if cur_theme == "dark" else T("theme_to_dark")
+        self.btn_theme = ctk.CTkButton(
+            sb, text=theme_icon,
+            fg_color=C["card2"], hover_color=C["border"],
+            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
+            height=32, corner_radius=8,
+            command=self._toggle_theme
+        )
+        self.btn_theme.pack(fill="x", padx=12, pady=(0, 4))
+
+        # Botón de actualización
+        self._update_btns = {}
+        self.btn_update_backend = ctk.CTkButton(
+            sb, text=T("update_llama"),
+            fg_color=C["card2"], hover_color=C["border"],
+            text_color=C["sub"], font=ctk.CTkFont("Consolas", 11),
+            height=32, corner_radius=8,
+            command=lambda: self._open_update_dialog(self.backend_var.get())
+        )
+        self.btn_update_backend.pack(fill="x", padx=12, pady=(0, 4))
+        for bkey in BACKEND_META:
+            self._update_btns[bkey] = self.btn_update_backend
+
+        self.ver_label = ctk.CTkLabel(sb, text="llama.cpp: —",
+                                       font=ctk.CTkFont("Consolas", 10),
+                                       text_color=C["sub"])
+        self.ver_label.pack(anchor="w", padx=14, pady=(4, 12))
 
         self._detect_llama_version()
         threading.Thread(target=self._silent_update_check, daemon=True).start()

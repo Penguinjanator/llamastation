@@ -45,6 +45,38 @@ _NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win3
 
 ctk.set_default_color_theme("blue")
 
+# ── Adaptación a resolución de pantalla ──────────────────────────────────────
+def _get_screen_scale():
+    """
+    Devuelve un factor de escala basado en la resolución real del monitor.
+    - 1080p o menos  → 0.85  (pantallas pequeñas / scaling Windows 100–125%)
+    - 1440p           → 1.0   (diseño base)
+    - 4K+             → 1.2
+    Usa un root temporal para no interferir con la app real.
+    """
+    try:
+        _tmp = tk.Tk()
+        _tmp.withdraw()
+        sw = _tmp.winfo_screenwidth()
+        sh = _tmp.winfo_screenheight()
+        _tmp.destroy()
+    except Exception:
+        return 1.0
+    if sh <= 1080:
+        return 0.85
+    elif sh <= 1440:
+        return 1.0
+    else:
+        return 1.2
+
+def _scale(value: int, factor: float = None) -> int:
+    """Escala un valor entero de píxeles según el factor de pantalla."""
+    if factor is None:
+        factor = _SCREEN_SCALE
+    return max(1, int(round(value * factor)))
+
+_SCREEN_SCALE = _get_screen_scale()
+
 THEMES = {
     "dark": {
         "bg":      "#0f0f13",
@@ -172,7 +204,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         self.prof = {**DEFAULT_PROFILE, **saved}
 
         self.title("Configurar modelo")
-        self.geometry("700x860")
+        self.geometry(f"{_scale(700)}x{_scale(860)}")
         self.resizable(True, True)
         self.configure(fg_color=C["bg"])
         self.grab_set()
@@ -307,7 +339,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         ctk.CTkLabel(c,
             text=T("split_tip"),
             font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
-            wraplength=560, justify="left"
+            wraplength=_scale(560), justify="left"
         ).pack(anchor="w", padx=16, pady=(10, 4))
 
         sm_var = tk.StringVar(value="layer")
@@ -323,7 +355,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         ctk.CTkLabel(c,
             text=T("tensor_tip"),
             font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
-            wraplength=560, justify="left"
+            wraplength=_scale(560), justify="left"
         ).pack(anchor="w", padx=16, pady=(6, 4))
         ts_var = tk.StringVar(value="")
         self._vars["tensor_split"] = ts_var
@@ -339,7 +371,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         ctk.CTkLabel(c,
             text=T("cpu_mode_tip"),
             font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
-            wraplength=560, justify="left"
+            wraplength=_scale(560), justify="left"
         ).pack(anchor="w", padx=16, pady=(10, 8))
 
         mode_var = tk.StringVar(value="gpu")
@@ -365,7 +397,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         ctk.CTkLabel(c,
             text=T("cpu_tip2"),
             font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
-            wraplength=560, justify="left"
+            wraplength=_scale(560), justify="left"
         ).pack(anchor="w", padx=16, pady=(0, 12))
 
     def _on_exec_mode(self, mode):
@@ -430,7 +462,7 @@ class LoadModelDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(c, text=T("kv_label"),
                      font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
-                     wraplength=560, justify="left"
+                     wraplength=_scale(560), justify="left"
                      ).pack(anchor="w", padx=16, pady=(10, 2))
 
         for cache_key, cache_lbl, tip_txt in [
@@ -439,7 +471,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         ]:
             ctk.CTkLabel(c, text=f"  {cache_lbl}  {tip_txt}",
                          font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
-                         wraplength=560, justify="left"
+                         wraplength=_scale(560), justify="left"
                          ).pack(anchor="w", padx=16, pady=(6, 0))
             kv_var = tk.StringVar(value="f16")
             self._vars[cache_key] = kv_var
@@ -477,13 +509,13 @@ class LoadModelDialog(ctk.CTkToplevel):
         ctk.CTkLabel(c,
                      text=T("mmproj_tip"),
                      font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
-                     wraplength=560, justify="left"
+                     wraplength=_scale(560), justify="left"
                      ).pack(anchor="w", padx=16, pady=(8, 4))
 
         self._mmproj_status_label = ctk.CTkLabel(c,
             text=T("mmproj_none"),
             font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
-            wraplength=560, justify="left"
+            wraplength=_scale(560), justify="left"
         )
         self._mmproj_status_label.pack(anchor="w", padx=16, pady=(0, 6))
 
@@ -542,7 +574,7 @@ class LoadModelDialog(ctk.CTkToplevel):
                      ).pack(anchor="w", padx=16, pady=(0, 4))
         ctk.CTkLabel(c, text="Ruta al GGUF del modelo drafter. Usa draft-simple para backends estándar (rec.), dflash solo para BeeLlama.",
                      font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
-                     wraplength=560, justify="left"
+                     wraplength=_scale(560), justify="left"
                      ).pack(anchor="w", padx=16, pady=(0, 4))
 
         # Selector de tipo de especulación
@@ -605,7 +637,7 @@ class LoadModelDialog(ctk.CTkToplevel):
                      text="Requiere GGUF MTP (p.ej. Qwen3.6-27B-MTP-UD-Q4_K_XL de Unsloth).\n"
                           "Fuerza -np 1 automáticamente. Incompatible con --mmproj.",
                      font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
-                     wraplength=560, justify="left"
+                     wraplength=_scale(560), justify="left"
                      ).pack(anchor="w", padx=16, pady=(0, 6))
         mtp_sw_row = ctk.CTkFrame(c, fg_color="transparent")
         mtp_sw_row.pack(fill="x", padx=16, pady=(0, 4))
@@ -621,7 +653,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         ctk.CTkLabel(c,
                      text=T("mtp_manual_hint"),
                      font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
-                     wraplength=560, justify="left"
+                     wraplength=_scale(560), justify="left"
                      ).pack(anchor="w", padx=16, pady=(8, 0))
         ctk.CTkFrame(c, height=8, fg_color="transparent").pack()
 
@@ -870,7 +902,7 @@ class UpdateDialog(ctk.CTkToplevel):
         self._backend_key = backend_key
 
         self.title(f"Actualizar {self._meta['label']}")
-        self.geometry("620x500")
+        self.geometry(f"{_scale(620)}x{_scale(500)}")
         self.resizable(False, False)
         self.configure(fg_color=C["bg"])
         self.grab_set()
@@ -1268,7 +1300,7 @@ class ModelBrowserDialog(ctk.CTkToplevel):
         self._models     = []
 
         self.title("Seleccionar modelo")
-        self.geometry("680x580")
+        self.geometry(f"{_scale(680)}x{_scale(580)}")
         self.resizable(True, True)
         self.configure(fg_color=C["bg"])
         self.grab_set()
@@ -1420,7 +1452,7 @@ class ModelBrowserDialog(ctk.CTkToplevel):
         ctk.CTkLabel(left_col, text=name,
                      font=ctk.CTkFont("Consolas", 12, "bold"),
                      text_color=C["text"], anchor="w",
-                     wraplength=420, justify="left").pack(anchor="w")
+                     wraplength=_scale(420), justify="left").pack(anchor="w")
 
         meta_row = ctk.CTkFrame(left_col, fg_color="transparent")
         meta_row.pack(anchor="w", pady=(2, 0))
@@ -1736,8 +1768,10 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
         super().__init__()
         self.title("LlamaStation")
-        self.geometry("1300x840")
-        self.minsize(1000, 700)
+        _w = _scale(1300)
+        _h = _scale(840)
+        self.geometry(f"{_w}x{_h}")
+        self.minsize(_scale(900), _scale(620))
 
         # Icono de la ventana
         try:
@@ -1798,7 +1832,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self._current_session_id = None
 
         # ── Sidebar izquierda (historial) ──────────────────────────────
-        self.left_sidebar = ctk.CTkFrame(self, width=240, fg_color=C["panel"], corner_radius=0)
+        self.left_sidebar = ctk.CTkFrame(self, width=_scale(240), fg_color=C["panel"], corner_radius=0)
         self.left_sidebar.pack(side="left", fill="y")
         self.left_sidebar.pack_propagate(False)
 
@@ -1807,7 +1841,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.main.pack(side="left", fill="both", expand=True)
 
         # ── Sidebar derecha (controles) ────────────────────────────────
-        self.sidebar = ctk.CTkFrame(self, width=260, fg_color=C["panel"], corner_radius=0)
+        self.sidebar = ctk.CTkFrame(self, width=_scale(260), fg_color=C["panel"], corner_radius=0)
         self.sidebar.pack(side="right", fill="y")
         self.sidebar.pack_propagate(False)
 
@@ -2023,7 +2057,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             ctk.CTkLabel(inner, text=title,
                          font=ctk.CTkFont("Consolas", 11),
                          text_color=C["accent2"] if is_active else C["text"],
-                         anchor="w", wraplength=170, justify="left"
+                         anchor="w", wraplength=_scale(170), justify="left"
                          ).pack(side="left", fill="x", expand=True)
 
             # Botón eliminar (aparece en hover)
@@ -2092,7 +2126,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.model_label = ctk.CTkLabel(mi, text=T("no_model"),
                                          font=ctk.CTkFont("Consolas", 11),
                                          text_color=C["text"],
-                                         wraplength=210, justify="left")
+                                         wraplength=_scale(210), justify="left")
         self.model_label.pack(anchor="w", pady=(4, 0))
 
         ctk.CTkButton(sb, text=T("my_models"),
@@ -4642,7 +4676,7 @@ print(message.content[0].text)"""
                      text="LLM inference engine en C/C++. Creado por Georgi Gerganov y la comunidad ggml-org.\n"
                           "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 6))
         _link_row(c2, "Repositorio", "https://github.com/ggml-org/llama.cpp")
         ctk.CTkFrame(c2, height=8, fg_color="transparent").pack()
 
@@ -4656,7 +4690,7 @@ print(message.content[0].text)"""
                           "Basado en TurboQuant (arXiv:2504.19874, ICLR 2026) por Zirlin et al.\n"
                           "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors / TheTom",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 6))
         _link_row(c3, "Repositorio", "https://github.com/TheTom/llama-cpp-turboquant")
         _link_row(c3, "Paper TurboQuant", "https://arxiv.org/abs/2504.19874")
         ctk.CTkFrame(c3, height=8, fg_color="transparent").pack()
@@ -4670,7 +4704,7 @@ print(message.content[0].text)"""
                           "Permite combinar contextos largos y alta velocidad de generación.\n"
                           "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors / AtomicBot-ai",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 6))
         _link_row(c4, "Repositorio", "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant")
         ctk.CTkFrame(c4, height=8, fg_color="transparent").pack()
 
@@ -4683,7 +4717,7 @@ print(message.content[0].text)"""
                           "Experimental — ideal para modelos con soporte DFlash.\n"
                           "Licencia MIT  ·  Copyright © 2023-2026 The ggml authors / Anbeeld",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 6))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 6))
         _link_row(c5, "Repositorio", "https://github.com/Anbeeld/beellama.cpp")
         ctk.CTkFrame(c5, height=8, fg_color="transparent").pack()
 
@@ -4699,7 +4733,7 @@ print(message.content[0].text)"""
                           "Modelos disponibles: tiny · base · small · medium · large-v3\n"
                           "El modo voz siempre usa CPU (int8) para no competir con la GPU del LLM.",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 4))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 4))
         _link_row(c_voice, "Repositorio", "https://github.com/SYSTRAN/faster-whisper")
         ctk.CTkLabel(c_voice, text="pip install faster-whisper",
                      font=ctk.CTkFont("Consolas", 11),
@@ -4715,7 +4749,7 @@ print(message.content[0].text)"""
                           "Se descarga automáticamente (~1.8 GB) la primera vez que se carga.\n"
                           "Puede ejecutarse en CPU o CUDA. CUDA requiere PyTorch con cuDNN 8 (torch 2.1.x).",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 4))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 4))
         _link_row(c_xtts, "Repositorio", "https://github.com/coqui-ai/TTS")
         ctk.CTkLabel(c_xtts, text="pip install coqui-tts",
                      font=ctk.CTkFont("Consolas", 11),
@@ -4727,12 +4761,12 @@ print(message.content[0].text)"""
         ctk.CTkLabel(c_xtts,
                      text="pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121",
                      font=ctk.CTkFont("Consolas", 10),
-                     text_color=C["accent2"], wraplength=640, justify="left").pack(anchor="w", padx=16, pady=(0, 4))
+                     text_color=C["accent2"], wraplength=_scale(640), justify="left").pack(anchor="w", padx=16, pady=(0, 4))
         ctk.CTkLabel(c_xtts,
                      text="Si XTTS falla con CUDA y da error de cudnn64_8.dll, instala también:\n"
                           "pip install nvidia-cudnn-cu11",
                      font=ctk.CTkFont("Consolas", 10),
-                     text_color=C["yellow"], wraplength=640, justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+                     text_color=C["yellow"], wraplength=_scale(640), justify="left").pack(anchor="w", padx=16, pady=(0, 10))
 
         c_audio = _card()
         ctk.CTkLabel(c_audio, text="🔊  Audio — dependencias adicionales",
@@ -4744,7 +4778,7 @@ print(message.content[0].text)"""
                           "pydub        —  conversión de audio al importar clips (requiere ffmpeg en el PATH)\n"
                           "scipy        —  procesado de audio (resampling)",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"], justify="left", wraplength=640).pack(anchor="w", padx=16, pady=(0, 4))
+                     text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 4))
         ctk.CTkLabel(c_audio,
                      text="pip install sounddevice soundfile pydub scipy",
                      font=ctk.CTkFont("Consolas", 11),

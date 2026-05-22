@@ -154,7 +154,23 @@ Speech recognition (faster-whisper) always runs on **CPU** so it doesn't compete
 
 ## Installation
 
-**Run from source**
+**Option A — Pre-built .exe *(recommended if you just want to run it)***
+
+No Python required. No command line. Just download and run.
+
+1. Go to the [Releases](../../releases) page and download the latest `LlamaStation-vX.X.zip`
+2. **Extract the entire folder** somewhere permanent (e.g. `C:\LlamaStation\`) — don't just extract the `.exe`, the whole folder is needed
+3. Open the extracted folder and double-click **`LlamaStation.exe`**
+4. On first launch, click **⬆ Update / Download backend** in the sidebar — this downloads and installs llama.cpp automatically (only needed once)
+5. Click **Download models**, search for a model, download it, and you're ready to chat
+
+> ⚠️ **Windows SmartScreen** may show a warning the first time — this is normal for any unsigned app. Click **"More info"** → **"Run anyway"**. The entire source code is open and auditable right here on GitHub — every single line. If you still want extra peace of mind, feel free to [scan the .exe on VirusTotal](https://www.virustotal.com) before running it.
+
+> 💡 **Voice Mode is not included** in the `.exe` release — it requires PyTorch and XTTS (~3 GB of dependencies). If you want voice, use Option B below.
+
+---
+
+**Option B — Run from source**
 
 1. Download the repo — click the green **Code** button → **Download ZIP**, extract it wherever you want
    *(or `git clone https://github.com/vico-png/llamastation` if you know git)*

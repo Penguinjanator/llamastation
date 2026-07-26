@@ -132,7 +132,7 @@ DEFAULT_PROFILE = {
     "kv_type": "f16", "kv_type_v": "f16",
     "rope_freq_base": 0.0, "rope_freq_scale": 0.0,
     "extra_args": "", "system_prompt": "", "mmproj": "", "mmproj_disable": False,
-    "split_mode": "layer", "tensor_split": "", "draft_model": "",
+    "split_mode": "layer", "main_gpu": 0, "tensor_split": "", "draft_model": "",
     "draft_spec_type": "draft-simple",
     "mtp_enabled": False, "mtp_draft_n_max": 6,
 }
@@ -352,18 +352,54 @@ class LoadModelDialog(ctk.CTkToplevel):
                                font=ctk.CTkFont("Consolas", 11),
                                text_color=C["text"]).pack(side="left", padx=(0, 14))
 
-        ctk.CTkLabel(c,
+        # ── Selector de GPU principal (solo visible en modo 1 GPU) ──────────
+        gpu_sel_frame = ctk.CTkFrame(c, fg_color=C["card2"], corner_radius=8)
+        mg_var = tk.IntVar(value=0)
+        self._vars["main_gpu"] = mg_var
+
+        ctk.CTkLabel(gpu_sel_frame,
+            text="GPU a usar:",
+            font=ctk.CTkFont("Consolas", 11), text_color=C["sub"]
+        ).pack(side="left", padx=(12, 8), pady=8)
+
+        for idx, label in [(0, "GPU 0  (primera)"), (1, "GPU 1  (segunda)")]:
+            ctk.CTkRadioButton(gpu_sel_frame, text=label, variable=mg_var, value=idx,
+                               fg_color=C["accent"], hover_color=C["accent2"],
+                               font=ctk.CTkFont("Consolas", 11),
+                               text_color=C["text"]).pack(side="left", padx=(0, 14), pady=8)
+
+        def _on_split_change(*_):
+            if sm_var.get() == "none":
+                gpu_sel_frame.pack(fill="x", padx=16, pady=(0, 8))
+                ts_frame.pack_forget()
+            else:
+                gpu_sel_frame.pack_forget()
+                ts_frame.pack(fill="x", padx=16, pady=(0, 12))
+
+        sm_var.trace_add("write", _on_split_change)
+
+        # ── Tensor split (oculto en modo 1 GPU) ────────────────────────────
+        ts_frame = ctk.CTkFrame(c, fg_color="transparent")
+        ctk.CTkLabel(ts_frame,
             text=T("tensor_tip"),
             font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
             wraplength=_scale(560), justify="left"
-        ).pack(anchor="w", padx=16, pady=(6, 4))
+        ).pack(anchor="w", pady=(0, 4))
         ts_var = tk.StringVar(value="")
         self._vars["tensor_split"] = ts_var
-        ctk.CTkEntry(c, textvariable=ts_var,
+        ctk.CTkEntry(ts_frame, textvariable=ts_var,
                       fg_color=C["input"], text_color=C["accent2"],
                       font=ctk.CTkFont("Consolas", 12),
                       placeholder_text=T("tensor_ph"),
-                      height=32).pack(fill="x", padx=16, pady=(0, 12))
+                      height=32).pack(fill="x")
+
+        # Estado inicial según perfil guardado
+        if self.prof.get("split_mode", "layer") == "none":
+            gpu_sel_frame.pack(fill="x", padx=16, pady=(0, 8))
+        else:
+            ts_frame.pack(fill="x", padx=16, pady=(0, 12))
+
+        ctk.CTkFrame(c, height=4, fg_color="transparent").pack()
 
     def _sec_cpu_ram(self, s):
         self._title(s, T("sec_cpu"))
@@ -878,6 +914,58 @@ def _find_best_asset(assets, cuda_mm, cuda_maj):
                 return a
     return None
 
+def _find_release_with_asset(api_latest_url, cuda_mm, cuda_maj, asset_fn=None, max_releases=5, log_fn=None):
+    """
+    Busca un asset compatible empezando por /releases/latest y, si esa release
+    no tiene ningún build compatible (por ejemplo porque el CI aún no ha subido
+    todos los assets), va probando las releases anteriores una a una.
+
+    Devuelve (release_dict, asset_dict, cudart_dict_or_None) o (None, None, None)
+    si tras revisar max_releases no se encuentra nada.
+    log_fn, si se pasa, se llama con cada línea de log (pensado para volcar a la GUI).
+    """
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
+    # /releases/latest -> /releases (lista paginada, más recientes primero)
+    list_url = api_latest_url.rsplit("/latest", 1)[0]
+
+    try:
+        resp = requests.get(f"{list_url}?per_page={max_releases}",
+                            headers={"User-Agent": "LlamaStation-Updater"},
+                            timeout=20)
+        resp.raise_for_status()
+        releases = resp.json()
+    except Exception as e:
+        _log(f"✗ Error al listar releases: {e}")
+        return None, None, None
+
+    if not isinstance(releases, list) or not releases:
+        return None, None, None
+
+    for i, release in enumerate(releases):
+        tag = release.get("tag_name", "desconocida")
+        assets = release.get("assets", [])
+
+        if asset_fn:
+            asset  = asset_fn(assets, cuda_mm, cuda_maj)
+            cudart = None
+        else:
+            asset  = _find_best_asset(assets, cuda_mm, cuda_maj)
+            cudart = _find_cudart_asset(assets, cuda_mm, cuda_maj)
+
+        if asset:
+            if i > 0:
+                _log(f"  ⚠ La release más reciente no tenía asset compatible — usando {tag} ({i} release(s) atrás)")
+            return release, asset, cudart
+
+        # Sin match en esta release: loguear qué assets sí había, para depurar
+        nombres = [a.get("name", "?") for a in assets]
+        _log(f"  ✗ {tag}: sin asset compatible. Assets disponibles: {', '.join(nombres) if nombres else '(ninguno)'}")
+
+    return None, None, None
+
 def _find_cudart_asset(assets, cuda_mm, cuda_maj):
     patterns = [
         lambda n: (n.startswith("cudart-llama") and "win" in n and f"cuda-{cuda_mm}" in n and "x64" in n and n.endswith(".zip")),
@@ -1025,33 +1113,27 @@ class UpdateDialog(ctk.CTkToplevel):
         repo = "/".join(api_url.split("/")[4:6])
         self.after(0, lambda: self._log(f"→ Consultando GitHub ({repo})..."))
         self.after(0, lambda: self._set_progress(0.1, "Consultando GitHub..."))
-        try:
-            resp = requests.get(api_url,
-                                headers={"User-Agent": "LlamaStation-Updater"},
-                                timeout=20)
-            resp.raise_for_status()
-            release = resp.json()
-        except Exception as e:
-            self.after(0, lambda err=str(e): self._log(f"✗ Error al contactar GitHub: {err}"))
+
+        asset_fn = self._meta.get("asset_fn")
+
+        # Busca en /releases/latest y, si no hay asset compatible (por ejemplo
+        # porque el CI aún no ha terminado de subir los builds), cae hacia
+        # releases anteriores automáticamente.
+        release, asset, cudart = _find_release_with_asset(
+            api_url, cuda_mm, cuda_maj, asset_fn=asset_fn,
+            log_fn=lambda msg: self.after(0, lambda m=msg: self._log(m)),
+        )
+
+        if release is None:
             self.after(0, lambda: self._set_progress(0, "Error de conexión"))
             return
 
         tag = release.get("tag_name", "desconocida")
-        assets = release.get("assets", [])
         self.after(0, lambda: self.lbl_latest.configure(text=tag))
         self.after(0, lambda: self._log(f"  Última release: {tag}"))
 
-        # Buscar assets — usar asset_fn custom si existe, si no el estándar
-        asset_fn = self._meta.get("asset_fn")
-        if asset_fn:
-            asset  = asset_fn(assets, cuda_mm, cuda_maj)
-            cudart = None  # TheTom no tiene cudart separado
-        else:
-            asset  = _find_best_asset(assets, cuda_mm, cuda_maj)
-            cudart = _find_cudart_asset(assets, cuda_mm, cuda_maj)
-
         if not asset:
-            self.after(0, lambda: self._log("✗ No se encontró asset compatible para tu CUDA/Windows/x64"))
+            self.after(0, lambda: self._log("✗ No se encontró asset compatible para tu CUDA/Windows/x64 en las últimas releases"))
             self.after(0, lambda: self._set_progress(0, "Asset no encontrado"))
             return
 
@@ -1801,6 +1883,8 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.current_model    = ""
         self.current_prof     = dict(DEFAULT_PROFILE)
         self._stop_generation = False   # flag para abortar generación
+        self._reasoning_control_supported = True  # se desactiva solo si el backend responde 404
+        self._current_gen_id = None     # id de la generación en curso (para /control)
         self._session_tokens  = 0       # tokens de contexto acumulados en sesión
         self._stopping        = False   # flag de parada manual del servidor
         self._attached_image  = None    # ruta de imagen adjunta para vision
@@ -2456,6 +2540,30 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         )
         self.btn_enable_thinking.pack(side="right", padx=(0, 4), pady=10)
 
+        # Reasoning budget slider (visible solo cuando thinking está ON)
+        _budget = self.settings.get("reasoning_budget", 8000)
+        self.reasoning_budget_var = tk.IntVar(value=_budget)
+        self.reasoning_budget_frame = ctk.CTkFrame(hdr, fg_color="transparent")
+        self.reasoning_budget_frame.pack(side="right", padx=(0, 4), pady=10)
+        self.reasoning_budget_label = ctk.CTkLabel(
+            self.reasoning_budget_frame,
+            text=f"Budget: {_budget//1000}k",
+            font=ctk.CTkFont("Consolas", 10),
+            text_color=C["sub"], width=60
+        )
+        self.reasoning_budget_label.pack(side="left", padx=(0, 2))
+        self.reasoning_budget_slider = ctk.CTkSlider(
+            self.reasoning_budget_frame,
+            from_=1000, to=32000, number_of_steps=31,
+            variable=self.reasoning_budget_var,
+            width=90, height=16,
+            command=self._on_reasoning_budget_change
+        )
+        self.reasoning_budget_slider.pack(side="left")
+        # Mostrar/ocultar según estado inicial del thinking
+        if not _think_en:
+            self.reasoning_budget_frame.pack_forget()
+
         # Toggle web search
         _web = self.settings.get("toggle_websearch", False)
         self.websearch_var = tk.BooleanVar(value=_web)
@@ -2469,6 +2577,34 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             command=self._toggle_websearch
         )
         self.btn_websearch.pack(side="right", padx=(0, 6), pady=10)
+
+        # Toggle auto-continue (continuation loop cuando finish_reason == "length")
+        _autocont = self.settings.get("toggle_autocont", False)
+        self.autocont_var = tk.BooleanVar(value=_autocont)
+        self.btn_autocont = ctk.CTkButton(
+            hdr, text="🔁 AutoCont ON" if _autocont else "🔁 AutoCont",
+            width=110, height=30,
+            fg_color=C["yellow"] if _autocont else C["card2"],
+            hover_color=C["border"],
+            text_color="#0f0f13" if _autocont else C["sub"],
+            font=ctk.CTkFont("Consolas", 11, "bold"),
+            command=self._toggle_autocont
+        )
+        self.btn_autocont.pack(side="right", padx=(0, 4), pady=10)
+
+        # Toggle file tools (acceso a carpeta local: listar, ver/analizar imagenes, crear carpetas, mover archivos)
+        _fs = self.settings.get("toggle_fstools", False)
+        self.fstools_var = tk.BooleanVar(value=_fs)
+        self.btn_fstools = ctk.CTkButton(
+            hdr, text="\U0001f4c1 Files ON" if _fs else "\U0001f4c1 Files",
+            width=100, height=30,
+            fg_color=C["green"] if _fs else C["card2"],
+            hover_color=C["border"],
+            text_color="#0f0f13" if _fs else C["sub"],
+            font=ctk.CTkFont("Consolas", 11, "bold"),
+            command=self._toggle_fstools
+        )
+        self.btn_fstools.pack(side="right", padx=(0, 4), pady=10)
 
         self.chat_display = ctk.CTkTextbox(f, fg_color=C["panel"],
                                             text_color=C["text"],
@@ -2547,6 +2683,15 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                           corner_radius=8, state="disabled",
                                           command=self._stop_gen)
         self.btn_stop_gen.pack(side="left", padx=(6, 0))
+
+        # Botón "Responder ya" (reasoning_end) — solo visible mientras el modelo piensa
+        self.btn_reasoning_end = ctk.CTkButton(
+            ii, text="⚡ Responder ya", width=130, height=44,
+            fg_color=C["card2"], hover_color=C["accent"],
+            text_color=C["accent2"], font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            corner_radius=8, command=self._force_reasoning_end
+        )
+        # No se hace .pack() aquí: se muestra/oculta dinámicamente desde _api()
         return f
 
     def _toggle_thinking(self):
@@ -2578,11 +2723,25 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             )
         self.settings["toggle_thinking_enable"] = self.enable_thinking_var.get()
         save_settings(self.settings)
+        # Mostrar/ocultar slider de budget según estado del thinking
+        if self.enable_thinking_var.get():
+            self.reasoning_budget_frame.pack(side="right", padx=(0, 4), pady=10,
+                                             before=self.btn_enable_thinking)
+        else:
+            self.reasoning_budget_frame.pack_forget()
         # Si el servidor esta corriendo, reiniciarlo para que el cambio
         # afecte a todos los clientes (chat, OpenClaw, etc.)
         if self.server_running:
             self._log(f"[{datetime.now():%H:%M:%S}] Reiniciando servidor (cambio thinking mode)...")
             self._restart_for_thinking()
+
+    def _on_reasoning_budget_change(self, value):
+        """Callback del slider de reasoning budget."""
+        budget = int(value)
+        self.reasoning_budget_var.set(budget)
+        self.reasoning_budget_label.configure(text=f"Budget: {budget//1000}k")
+        self.settings["reasoning_budget"] = budget
+        save_settings(self.settings)
 
     def _restart_for_thinking(self):
         """Para el servidor y lo vuelve a arrancar con el nuevo chat_template_kwargs."""
@@ -2613,8 +2772,102 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.settings["toggle_websearch"] = self.websearch_var.get()
         save_settings(self.settings)
 
+    def _toggle_fstools(self):
+        # Si se activa y no hay carpeta base configurada, pedirla primero
+        if not self.fstools_var.get():
+            base = self.settings.get("fs_base_dir", "")
+            if not base or not os.path.isdir(base):
+                chosen = filedialog.askdirectory(title="Elige la carpeta a la que el modelo tendra acceso")
+                if not chosen:
+                    return  # cancelado, no se activa
+                self.settings["fs_base_dir"] = chosen
+                save_settings(self.settings)
+
+        self.fstools_var.set(not self.fstools_var.get())
+        if self.fstools_var.get():
+            self.btn_fstools.configure(
+                text="\U0001f4c1 Files ON",
+                fg_color=C["green"],
+                text_color="#0f0f13",
+            )
+        else:
+            self.btn_fstools.configure(
+                text="\U0001f4c1 Files",
+                fg_color=C["card2"],
+                text_color=C["sub"],
+            )
+        self.settings["toggle_fstools"] = self.fstools_var.get()
+        save_settings(self.settings)
+
+    def _toggle_autocont(self):
+        self.autocont_var.set(not self.autocont_var.get())
+        if self.autocont_var.get():
+            self.btn_autocont.configure(
+                text="🔁 AutoCont ON",
+                fg_color=C["yellow"],
+                text_color="#0f0f13",
+            )
+        else:
+            self.btn_autocont.configure(
+                text="🔁 AutoCont",
+                fg_color=C["card2"],
+                text_color=C["sub"],
+            )
+        self.settings["toggle_autocont"] = self.autocont_var.get()
+        save_settings(self.settings)
+
     def _stop_gen(self):
         self._stop_generation = True
+
+    # ── Control de reasoning_end (botón "Responder ya") ──────────────────
+
+    def _show_reasoning_end_btn(self):
+        """Muestra el botón junto a ⏹ solo si el backend soporta el control."""
+        if not self._reasoning_control_supported:
+            return
+        self.btn_reasoning_end.configure(state="normal", text="⚡ Responder ya")
+        self.btn_reasoning_end.pack(side="left", padx=(6, 0))
+
+    def _hide_reasoning_end_btn(self):
+        self.btn_reasoning_end.pack_forget()
+
+    def _force_reasoning_end(self):
+        """Pide al servidor que corte el bloque de pensamiento en curso
+        y pase a generar la respuesta final, sin abortar la generación."""
+        gen_id = self._current_gen_id
+        if not gen_id:
+            self._log("[!] reasoning_end: no hay id de generación capturado todavía (¿backend no lo devuelve en el stream?)")
+            return
+        self.btn_reasoning_end.configure(state="disabled", text="Cortando...")
+        port = self.settings.get("port", "8080")
+
+        def _do():
+            try:
+                r = requests.post(
+                    f"http://127.0.0.1:{port}/v1/chat/completions/control",
+                    json={"id": gen_id, "action": "reasoning_end"},
+                    timeout=10
+                )
+                body_preview = (r.text or "")[:200]
+                self._log(f"[reasoning_end] id={gen_id}  status={r.status_code}  body={body_preview!r}")
+                if r.status_code == 404:
+                    # El backend no tiene este endpoint (build antiguo / fork sin este PR)
+                    self._reasoning_control_supported = False
+                    self.after(0, lambda: (
+                        self._log("[!] Tu backend no soporta reasoning_end "
+                                   "(necesitas un llama-server con soporte de reasoning_control)."),
+                        self._hide_reasoning_end_btn()
+                    ))
+                    return
+                if not r.ok:
+                    self._log(f"[!] reasoning_end devolvió {r.status_code}: {body_preview}")
+            except Exception as e:
+                self._log(f"[!] Error llamando a reasoning_end: {e}")
+            finally:
+                self.after(0, lambda: self.btn_reasoning_end.configure(
+                    state="normal", text="⚡ Responder ya"))
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def _clear_chat(self):
         self.chat_history = []
@@ -2875,10 +3128,13 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.chat_history.append({"role": "user", "content": hist_txt})
 
         self._stop_generation = False
+        self._current_gen_id = None
+        self._hide_reasoning_end_btn()
         self.btn_send.configure(state="disabled", text=T("sending"))
         self.btn_stop_gen.configure(state="normal")
         use_web = self.websearch_var.get()
-        threading.Thread(target=self._api, args=(msgs, use_web), daemon=True).start()
+        use_fs = self.fstools_var.get()
+        threading.Thread(target=self._api, args=(msgs, use_web, use_fs), daemon=True).start()
 
     def _check_code_blocks(self, response_text: str):
         """
@@ -2995,7 +3251,110 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         except Exception as e:
             return f"Error en búsqueda web: {e}"
 
-    def _api(self, messages, use_web=False):
+    # ── File tools (acceso a carpeta local, confinado a fs_base_dir) ─────
+
+    def _fs_safe_path(self, rel_path):
+        """
+        Resuelve rel_path dentro de la carpeta base configurada.
+        Lanza ValueError si el resultado se sale de esa carpeta (path traversal).
+        """
+        base = Path(self.settings.get("fs_base_dir", "")).resolve()
+        candidate = (base / rel_path).resolve() if rel_path not in (None, "", ".") else base
+        if base not in candidate.parents and candidate != base:
+            raise ValueError(f"Ruta fuera de la carpeta permitida: {rel_path}")
+        return candidate
+
+    def _fs_list_dir(self, rel_path=""):
+        try:
+            target = self._fs_safe_path(rel_path)
+            if not target.exists():
+                return f"No existe: {rel_path or '.'}"
+            if not target.is_dir():
+                return f"No es una carpeta: {rel_path or '.'}"
+            entries = []
+            for item in sorted(target.iterdir()):
+                kind = "DIR " if item.is_dir() else "FILE"
+                size = "" if item.is_dir() else f" ({item.stat().st_size} bytes)"
+                entries.append(f"[{kind}] {item.name}{size}")
+            return "\n".join(entries) if entries else "(carpeta vacia)"
+        except Exception as e:
+            return f"Error al listar: {e}"
+
+    def _fs_create_dir(self, rel_path):
+        try:
+            target = self._fs_safe_path(rel_path)
+            target.mkdir(parents=True, exist_ok=True)
+            return f"Carpeta creada: {rel_path}"
+        except Exception as e:
+            return f"Error al crear carpeta: {e}"
+
+    def _fs_move_file(self, src_rel, dst_rel):
+        try:
+            src = self._fs_safe_path(src_rel)
+            dst = self._fs_safe_path(dst_rel)
+            if not src.exists():
+                return f"No existe el origen: {src_rel}"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            return f"Movido: {src_rel} -> {dst_rel}"
+        except Exception as e:
+            return f"Error al mover: {e}"
+
+    def _fs_write_file(self, rel_path, content):
+        try:
+            target = self._fs_safe_path(rel_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content or "", encoding="utf-8")
+            return f"Archivo escrito: {rel_path} ({len(content or '')} caracteres)"
+        except Exception as e:
+            return f"Error al escribir archivo: {e}"
+
+    def _fs_describe_image(self, rel_path, question=""):
+        """
+        Codifica la imagen en base64 y hace una llamada de vision aparte
+        (single-turn, no streaming) contra el propio llama-server local.
+        Devuelve la descripcion como texto, para usarla como resultado de tool call.
+        """
+        try:
+            target = self._fs_safe_path(rel_path)
+            if not target.is_file():
+                return f"No existe el archivo: {rel_path}"
+            ext = target.suffix.lower().lstrip(".")
+            mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                        "png": "image/png", "gif": "image/gif",
+                        "webp": "image/webp", "bmp": "image/bmp"}
+            if ext not in mime_map:
+                return f"Formato de imagen no soportado: {ext}"
+            mime = mime_map[ext]
+            with open(target, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode()
+
+            port = self.settings.get("port", "8080")
+            prompt = question or "Describe esta imagen con detalle: contenido, personas, escena, colores, estilo."
+            payload = {
+                "model": "local",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+                "temperature": 0.3,
+                "max_tokens": 400,
+                "stream": False,
+            }
+            resp = requests.post(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                json=payload, timeout=120
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            return f"Error al analizar imagen: {e}"
+
+    def _api(self, messages, use_web=False, use_fs=False):
         port = self.settings.get("port", "8080")
         p = self.current_prof
         full = ""
@@ -3022,11 +3381,103 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             }
         }]
 
+        FS_BASE_LABEL = self.settings.get("fs_base_dir", "(sin configurar)")
+        FS_TOOLS = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_dir",
+                    "description": f"Lista archivos y subcarpetas dentro de la carpeta permitida ({FS_BASE_LABEL}). Usa una ruta relativa a esa carpeta, vacia ('') para la raiz.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa a la carpeta base. Vacia para listar la raiz."}
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "describe_image",
+                    "description": "Analiza una imagen dentro de la carpeta permitida usando el modelo de vision y devuelve una descripcion en texto (contenido, escena, personas, colores, etc). Usala antes de decidir donde mover o como clasificar una imagen.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa de la imagen dentro de la carpeta base"},
+                            "question": {"type": "string", "description": "Opcional: que quieres saber sobre la imagen en concreto"}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_dir",
+                    "description": "Crea una subcarpeta (y las carpetas intermedias necesarias) dentro de la carpeta permitida.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa de la carpeta a crear"}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "move_file",
+                    "description": "Mueve o renombra un archivo dentro de la carpeta permitida. Crea la carpeta destino si no existe.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "src": {"type": "string", "description": "Ruta relativa del archivo de origen"},
+                            "dst": {"type": "string", "description": "Ruta relativa de destino (incluye nombre de archivo)"}
+                        },
+                        "required": ["src", "dst"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": "Crea o sobrescribe un archivo de texto (.txt, .md, etc) dentro de la carpeta permitida con el contenido indicado.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa del archivo a crear/sobrescribir, incluyendo extension"},
+                            "content": {"type": "string", "description": "Contenido de texto a escribir en el archivo"}
+                        },
+                        "required": ["path", "content"]
+                    }
+                }
+            },
+        ]
+
+        def _dispatch_fs_tool(name, args):
+            if name == "list_dir":
+                return self._fs_list_dir(args.get("path", ""))
+            if name == "describe_image":
+                return self._fs_describe_image(args.get("path", ""), args.get("question", ""))
+            if name == "create_dir":
+                return self._fs_create_dir(args.get("path", ""))
+            if name == "move_file":
+                return self._fs_move_file(args.get("src", ""), args.get("dst", ""))
+            if name == "write_file":
+                return self._fs_write_file(args.get("path", ""), args.get("content", ""))
+            return f"Tool desconocida: {name}"
+
         try:
             current_messages = list(messages)
             max_tool_rounds = 5
+            max_autocont_rounds = 10  # máximo de continuaciones automáticas
+            _autocont_count = 0
 
-            for tool_round in range(max_tool_rounds + 1):
+            for tool_round in range(max_tool_rounds + max_autocont_rounds + 1):
                 payload = {
                     "model": "local",
                     "messages": current_messages,
@@ -3038,11 +3489,23 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     "repeat_penalty": float(p.get("repeat_penalty", 1.1)),
                     "seed":           int(p.get("seed", -1)),
                     "stream": True,
-                    "chat_template_kwargs": {"enable_thinking": bool(self.enable_thinking_var.get())},
+                    "chat_template_kwargs": {
+                        "enable_thinking": bool(self.enable_thinking_var.get()),
+                        **({"thinking_budget": self.reasoning_budget_var.get()} if self.enable_thinking_var.get() else {}),
+                    },
                 }
-                if use_web and tool_round < max_tool_rounds:
-                    payload["tools"] = WEB_TOOL
-                    payload["tool_choice"] = "auto"
+                if self.enable_thinking_var.get() and self._reasoning_control_supported:
+                    payload["reasoning_control"] = True
+                self._current_gen_id = None  # se rellena con el primer chunk de esta ronda
+                if tool_round < max_tool_rounds:
+                    active_tools = []
+                    if use_web:
+                        active_tools += WEB_TOOL
+                    if use_fs and self.settings.get("fs_base_dir"):
+                        active_tools += FS_TOOLS
+                    if active_tools:
+                        payload["tools"] = active_tools
+                        payload["tool_choice"] = "auto"
 
                 resp = requests.post(
                     f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -3070,6 +3533,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                             self.chat_display.see("end"),
                             self.chat_display.configure(state="disabled")
                         ))
+                        self.after(0, self._hide_reasoning_end_btn)
                         break
                     if not line: continue
                     line = line.decode()
@@ -3078,6 +3542,8 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     if d == "[DONE]": break
                     try:
                         chunk = json.loads(d)
+                        if self._current_gen_id is None and chunk.get("id"):
+                            self._current_gen_id = chunk["id"]
                         choice = chunk["choices"][0]
                         delta_obj = choice.get("delta", {})
                         delta = delta_obj.get("content", "")
@@ -3105,6 +3571,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                     if self.thinking_var.get() else None,
                                     self.chat_display.configure(state="disabled")
                                 ))
+                                self.after(0, self._show_reasoning_end_btn)
                             full_raw += r_delta
                             self.after(0, lambda x=r_delta: (
                                 self.chat_display.configure(state="normal"),
@@ -3122,6 +3589,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                 if self.thinking_var.get() else None,
                                 self.chat_display.configure(state="disabled")
                             ))
+                            self.after(0, self._hide_reasoning_end_btn)
 
                         if not delta:
                             if "timings" in chunk: timings = chunk["timings"]
@@ -3151,6 +3619,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                     if self.thinking_var.get() else None,
                                     self.chat_display.configure(state="disabled")
                                 ))
+                                self.after(0, self._show_reasoning_end_btn)
                             if in_channel and "<channel|>" in think_buf:
                                 idx_end = think_buf.find("<channel|>")
                                 think_part = think_buf[:idx_end]
@@ -3172,6 +3641,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                     if self.thinking_var.get() else None,
                                     self.chat_display.configure(state="disabled")
                                 ))
+                                self.after(0, self._hide_reasoning_end_btn)
                                 if after:
                                     full += after
                                     self.after(0, lambda x=after: (
@@ -3211,6 +3681,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                         if self.thinking_var.get() else None,
                                         self.chat_display.configure(state="disabled")
                                     ))
+                                    self.after(0, self._show_reasoning_end_btn)
                                 else:
                                     flush_idx = len(think_buf)
                                     for i in range(1, 7):
@@ -3246,6 +3717,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                         if self.thinking_var.get() else None,
                                         self.chat_display.configure(state="disabled")
                                     ))
+                                    self.after(0, self._hide_reasoning_end_btn)
                                 else:
                                     flush_idx = len(think_buf)
                                     for i in range(1, 8):
@@ -3266,7 +3738,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     except: pass
 
                 # ── Procesar tool calls ───────────────────────────────────────
-                if use_web and tool_calls_acc and finish_reason == "tool_calls":
+                if (use_web or use_fs) and tool_calls_acc and finish_reason == "tool_calls":
                     tc_list = []
                     for tidx in sorted(tool_calls_acc.keys()):
                         tc = tool_calls_acc[tidx]
@@ -3281,22 +3753,42 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                         "tool_calls": tc_list
                     })
 
+                    FS_ICONS = {
+                        "list_dir": "\U0001f4c2",
+                        "describe_image": "\U0001f5bc",
+                        "create_dir": "\U0001f4c1",
+                        "move_file": "\U0001f4e6",
+                        "write_file": "\U0001f4dd",
+                    }
+
                     for tc in tc_list:
+                        name = tc["function"]["name"]
                         try:
-                            args = json.loads(tc["function"]["arguments"])
-                            query = args.get("query", "")
+                            args = json.loads(tc["function"]["arguments"] or "{}")
                         except Exception:
-                            query = tc["function"]["arguments"]
+                            args = {}
 
-                        self.after(0, lambda q=query: (
-                            self.chat_display.configure(state="normal"),
-                            self.chat_display._textbox.insert("end",
-                                f"\n\U0001f310 Buscando: {q}\n", "think_hdr"),
-                            self.chat_display.configure(state="disabled")
-                        ))
-
-                        result = self._web_search(query)
-                        self._log(f"[Web] {query}")
+                        if name == "web_search":
+                            query = args.get("query", "")
+                            self.after(0, lambda q=query: (
+                                self.chat_display.configure(state="normal"),
+                                self.chat_display._textbox.insert("end",
+                                    f"\n\U0001f310 Buscando: {q}\n", "think_hdr"),
+                                self.chat_display.configure(state="disabled")
+                            ))
+                            result = self._web_search(query)
+                            self._log(f"[Web] {query}")
+                        else:
+                            icon = FS_ICONS.get(name, "\U0001f527")
+                            label = " ".join(str(v) for v in args.values()) if args else ""
+                            self.after(0, lambda i=icon, n=name, l=label: (
+                                self.chat_display.configure(state="normal"),
+                                self.chat_display._textbox.insert("end",
+                                    f"\n{i} {n}: {l}\n", "think_hdr"),
+                                self.chat_display.configure(state="disabled")
+                            ))
+                            result = _dispatch_fs_tool(name, args)
+                            self._log(f"[FS] {name}({args})")
 
                         current_messages.append({
                             "role": "tool",
@@ -3319,8 +3811,33 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     ))
                     continue  # siguiente ronda del for tool_round
 
-                break  # sin tool calls, salir del bucle
+                # ── Auto-continuación si la respuesta se cortó por max_tokens ──
+                if finish_reason == "length" and self.autocont_var.get() and not self._stop_generation and _autocont_count < max_autocont_rounds:
+                    _autocont_count += 1
+                    # Añadir respuesta parcial al historial de mensajes de esta llamada
+                    current_messages.append({"role": "assistant", "content": full or full_raw})
+                    current_messages.append({
+                        "role": "user",
+                        "content": "Tu respuesta se cortó por el límite de tokens. Continúa exactamente desde donde lo dejaste, sin repetir nada de lo ya dicho."
+                    })
+                    # Separador visual sutil en el chat
+                    self.after(0, lambda: (
+                        self.chat_display.configure(state="normal"),
+                        self.chat_display._textbox.insert("end",
+                            "\n↩ continuando...\n", "think_hdr"),
+                        self.chat_display.configure(state="disabled")
+                    ))
+                    # Resetear acumuladores para la siguiente parte
+                    full = ""
+                    full_raw = ""
+                    in_think = False
+                    native_in_think = False
+                    think_buf = ""
+                    continue
 
+                break  # sin tool calls y sin continuación, salir del bucle
+
+            self.after(0, self._hide_reasoning_end_btn)
             # ── Stats finales ─────────────────────────────────────────────────
             elapsed = time.time() - t_start
             ctx_size = int(self.current_prof.get("ctx_size", 4096))
@@ -3363,6 +3880,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self.btn_send.configure(state="normal", text=T("send")),
                 self.btn_stop_gen.configure(state="disabled"),
             ))
+            self.after(0, self._hide_reasoning_end_btn)
 
     # ── Servidor tab ──────────────────────────────────────────────────────
 
@@ -3621,7 +4139,10 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
         # Multi-GPU: split mode y tensor split
         sm = p.get("split_mode", "layer")
-        if sm and sm != "none":
+        if sm == "none":
+            args += ["--split-mode", "none"]
+            args += ["--main-gpu", str(int(p.get("main_gpu", 0)))]
+        elif sm:
             args += ["--split-mode", sm]
         ts = str(p.get("tensor_split", "")).strip()
         if ts:
@@ -3648,13 +4169,24 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         enable_thinking = getattr(self, "enable_thinking_var", None)
         if enable_thinking is not None:
             val = "true" if enable_thinking.get() else "false"
-            args += ["--chat-template-kwargs", f'{{"enable_thinking":{val}}}']
+            if enable_thinking.get():
+                _rbv = getattr(self, "reasoning_budget_var", None)
+                budget = int(_rbv.get()) if _rbv is not None else 8000
+                args += ["--chat-template-kwargs",
+                         f'{{"enable_thinking":{val},"thinking_budget":{budget}}}']
+            else:
+                args += ["--chat-template-kwargs", f'{{"enable_thinking":{val}}}']
         ex = str(p.get("extra_args","")).strip()
         if ex: args.extend(ex.split())
         # Draft Model (especulación clásica con modelo pequeño)
+        # NOTA: los binarios llama.cpp (oficial y forks AtomicChat/TurboQuant/MTP)
+        # esperan "draft" como valor de --spec-type, no "draft-simple" (ese nombre
+        # no existe en el binario y provoca "unknown speculative decoding type").
+        _SPEC_TYPE_MAP = {"draft-simple": "draft", "draft-mtp": "mtp"}
         draft_model = str(p.get("draft_model", "")).strip()
         if draft_model and os.path.isfile(draft_model):
-            draft_spec = str(p.get("draft_spec_type", "draft-simple")).strip() or "draft-simple"
+            draft_spec_raw = str(p.get("draft_spec_type", "draft-simple")).strip() or "draft-simple"
+            draft_spec = _SPEC_TYPE_MAP.get(draft_spec_raw, draft_spec_raw)
             args += ["--model-draft", draft_model,
                      "--spec-type", draft_spec,
                      "-ngld", "99"]
@@ -3673,7 +4205,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             for i, a in enumerate(args):
                 if a == "-np" and i + 1 < len(args):
                     args[i + 1] = "1"
-            args += ["--spec-type", "draft-mtp",
+            args += ["--spec-type", "mtp",
                      "--spec-draft-n-max", str(int(p.get("mtp_draft_n_max", 6)))]
         return args
 
@@ -4747,33 +5279,20 @@ print(message.content[0].text)"""
                      text_color=C["accent2"]).pack(anchor="w", padx=16, pady=(2, 10))
 
         c_xtts = _card()
-        ctk.CTkLabel(c_xtts, text="🗣️  coqui-tts / XTTS v2  —  síntesis de voz con clonación (TTS)",
+        ctk.CTkLabel(c_xtts, text="🗣️  Qwen3-TTS  —  síntesis de voz con clonación (TTS)",
                      font=ctk.CTkFont("Consolas", 13, "bold"),
                      text_color=C["text"]).pack(anchor="w", padx=16, pady=(12, 2))
         ctk.CTkLabel(c_xtts,
-                     text="Síntesis de voz multilingüe con clonación a partir de un clip de audio de ~12 segundos.\n"
-                          "Modelo: tts_models/multilingual/multi-dataset/xtts_v2\n"
-                          "Se descarga automáticamente (~1.8 GB) la primera vez que se carga.\n"
-                          "Puede ejecutarse en CPU o CUDA. CUDA requiere PyTorch con cuDNN 8 (torch 2.1.x).",
+                     text="Síntesis de voz multilingüe con clonación a partir de un clip de audio corto (~5s).\n"
+                          "Modelos: Qwen3-TTS-12Hz-1.7B-Base (clonado de voz)\n"
+                          "Corre como servidor HTTP en localhost:8777 (GPU 1 por defecto).\n"
+                          "Requiere entorno conda 'qwen3tts'. Instalar con install_qwen3tts.bat.",
                      font=ctk.CTkFont("Consolas", 11),
                      text_color=C["sub"], justify="left", wraplength=_scale(640)).pack(anchor="w", padx=16, pady=(0, 4))
-        _link_row(c_xtts, "Repositorio", "https://github.com/coqui-ai/TTS")
-        ctk.CTkLabel(c_xtts, text="pip install coqui-tts",
+        _link_row(c_xtts, "Repositorio", "https://github.com/QwenLM/Qwen3-TTS")
+        ctk.CTkLabel(c_xtts, text="pip install qwen-tts  (dentro del entorno conda qwen3tts)",
                      font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["accent2"]).pack(anchor="w", padx=16, pady=(2, 4))
-        ctk.CTkLabel(c_xtts,
-                     text="Para CUDA (recomendado, RTX):",
-                     font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"]).pack(anchor="w", padx=16)
-        ctk.CTkLabel(c_xtts,
-                     text="pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121",
-                     font=ctk.CTkFont("Consolas", 10),
-                     text_color=C["accent2"], wraplength=_scale(640), justify="left").pack(anchor="w", padx=16, pady=(0, 4))
-        ctk.CTkLabel(c_xtts,
-                     text="Si XTTS falla con CUDA y da error de cudnn64_8.dll, instala también:\n"
-                          "pip install nvidia-cudnn-cu11",
-                     font=ctk.CTkFont("Consolas", 10),
-                     text_color=C["yellow"], wraplength=_scale(640), justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+                     text_color=C["accent2"]).pack(anchor="w", padx=16, pady=(2, 10))
 
         c_audio = _card()
         ctk.CTkLabel(c_audio, text="🔊  Audio — dependencias adicionales",
@@ -4881,7 +5400,11 @@ def _run_headless(model_path: str, port: str, host: str):
     if kv_k != "f16": args += ["--cache-type-k", kv_k]
     if kv_v != "f16": args += ["--cache-type-v", kv_v]
     sm = p.get("split_mode", "layer")
-    if sm and sm != "none": args += ["--split-mode", sm]
+    if sm == "none":
+        args += ["--split-mode", "none"]
+        args += ["--main-gpu", str(int(p.get("main_gpu", 0)))]
+    elif sm:
+        args += ["--split-mode", sm]
     ts = str(p.get("tensor_split", "")).strip()
     if ts: args += ["--tensor-split", ts]
     if "llama-turboquant" in exe.replace("\\", "/"):
@@ -4903,9 +5426,13 @@ def _run_headless(model_path: str, port: str, host: str):
     ex = str(p.get("extra_args", "")).strip()
     if ex: args.extend(ex.split())
     # Draft Model (BeeLlama DFlash speculative decoding)
+    # Mismo mapeo que en el otro punto de construcción de args: "draft-simple"
+    # no es un valor real de --spec-type en los binarios llama.cpp.
+    _SPEC_TYPE_MAP = {"draft-simple": "draft", "draft-mtp": "mtp"}
     draft_model = str(p.get("draft_model", "")).strip()
     if draft_model and os.path.isfile(draft_model):
-        draft_spec = str(p.get("draft_spec_type", "draft-simple")).strip() or "draft-simple"
+        draft_spec_raw = str(p.get("draft_spec_type", "draft-simple")).strip() or "draft-simple"
+        draft_spec = _SPEC_TYPE_MAP.get(draft_spec_raw, draft_spec_raw)
         args += ["--model-draft", draft_model,
                  "--spec-type", draft_spec,
                  "-ngld", "99"]
@@ -4921,7 +5448,7 @@ def _run_headless(model_path: str, port: str, host: str):
         for i, a in enumerate(args):
             if a == "-np" and i + 1 < len(args):
                 args[i + 1] = "1"
-        args += ["--spec-type", "draft-mtp",
+        args += ["--spec-type", "mtp",
                  "--spec-draft-n-max", str(int(p.get("mtp_draft_n_max", 6)))]
     model_name = Path(model_path).name
     pport = settings.get("port", "8080")

@@ -38,6 +38,11 @@ try:
     _VOICE_OK = True
 except ImportError:
     class VoiceMixin: pass
+try:
+    from llamastation_telegram import TelegramBridge
+    _TG_OK = True
+except ImportError:
+    _TG_OK = False
     _VOICE_OK = False
 
 # Flag para ocultar ventanas de consola en Windows al lanzar subprocesos
@@ -185,6 +190,167 @@ def apply_theme(name):
     t = THEMES.get(name, THEMES["dark"])
     C.update(t)
     ctk.set_appearance_mode(t["ctk_mode"])
+
+
+class _MultilineVar:
+    """Emula la interfaz minima de tk.StringVar (get/set) pero respaldada
+    por un CTkTextbox multilinea, para poder reusar el mismo patron
+    _load_vars()/_confirm() que usan las variables clasicas."""
+    def __init__(self, textbox):
+        self._tb = textbox
+
+    def get(self):
+        return self._tb.get("1.0", "end-1c")
+
+    def set(self, value):
+        self._tb.delete("1.0", "end")
+        if value:
+            self._tb.insert("1.0", str(value))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  EDITOR EXPANDIDO DE TEXTO LARGO (con buscador) — system prompts, etc.
+# ══════════════════════════════════════════════════════════════════════════
+
+class TextEditorDialog(ctk.CTkToplevel):
+    """Modal grande para editar comodamente textos largos (p. ej. system
+    prompts) con word-wrap y un buscador con Enter/F3 para saltar entre
+    coincidencias, en vez de un CTkEntry de una sola linea infinita."""
+
+    def __init__(self, parent, title, initial_text=""):
+        super().__init__(parent)
+        self.result = None
+        self._matches = []
+        self._match_idx = -1
+
+        self.title(title)
+        self.geometry(f"{_scale(760)}x{_scale(600)}")
+        self.minsize(_scale(420), _scale(320))
+        self.resizable(True, True)
+        self.configure(fg_color=C["bg"])
+        self.grab_set()
+        self.focus_set()
+
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color=C["panel"], corner_radius=0, height=52)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text=title, font=ctk.CTkFont("Consolas", 13, "bold"),
+                     text_color=C["text"]).pack(side="left", padx=16)
+        ctk.CTkButton(hdr, text="✕", width=32, height=32,
+                      fg_color="transparent", hover_color=C["card"],
+                      text_color=C["sub"], font=ctk.CTkFont("Consolas", 14),
+                      command=self._cancel).pack(side="right", padx=10, pady=10)
+
+        # Barra de busqueda
+        sb = ctk.CTkFrame(self, fg_color=C["card2"], corner_radius=0, height=44)
+        sb.pack(fill="x"); sb.pack_propagate(False)
+        sb_in = ctk.CTkFrame(sb, fg_color="transparent")
+        sb_in.pack(fill="both", expand=True, padx=16, pady=6)
+        ctk.CTkLabel(sb_in, text="🔍", font=ctk.CTkFont("Consolas", 12),
+                     text_color=C["sub"]).pack(side="left")
+        self.search_entry = ctk.CTkEntry(sb_in, fg_color=C["input"],
+                                          text_color=C["text"],
+                                          font=ctk.CTkFont("Consolas", 12),
+                                          placeholder_text="Buscar en el texto...",
+                                          border_width=0, height=28)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=8)
+        self.search_entry.bind("<Return>", lambda e: self._find_next())
+        self.search_entry.bind("<KeyRelease>", self._on_search_change)
+        self.match_label = ctk.CTkLabel(sb_in, text="", font=ctk.CTkFont("Consolas", 11),
+                                         text_color=C["dim"], width=60)
+        self.match_label.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(sb_in, text="▲", width=28, height=28,
+                      fg_color=C["card"], hover_color=C["border"],
+                      text_color=C["sub"], command=lambda: self._find_next(-1)
+                      ).pack(side="left", padx=2)
+        ctk.CTkButton(sb_in, text="▼", width=28, height=28,
+                      fg_color=C["card"], hover_color=C["border"],
+                      text_color=C["sub"], command=lambda: self._find_next(1)
+                      ).pack(side="left", padx=2)
+
+        # Editor
+        body = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+        self.textbox = ctk.CTkTextbox(body, fg_color=C["input"],
+                                       text_color=C["text"],
+                                       font=ctk.CTkFont("Consolas", 13),
+                                       wrap="word", corner_radius=8)
+        self.textbox.pack(fill="both", expand=True)
+        if initial_text:
+            self.textbox.insert("1.0", initial_text)
+        tb = self.textbox._textbox
+        tb.tag_config("match", background=C.get("card2", "#252533"))
+        tb.tag_config("match_cur", background=C.get("accent", "#7c6af7"),
+                      foreground="#0f0f13")
+
+        self.bind("<F3>", lambda e: self._find_next())
+        self.bind("<Shift-F3>", lambda e: self._find_next(-1))
+        self.bind("<Escape>", lambda e: self._cancel())
+
+        # Footer
+        ft = ctk.CTkFrame(self, fg_color=C["panel"], corner_radius=0, height=56)
+        ft.pack(fill="x"); ft.pack_propagate(False)
+        ctk.CTkButton(ft, text="Cancelar", width=110, height=34,
+                      fg_color=C["card"], hover_color=C["border"],
+                      text_color=C["sub"], command=self._cancel
+                      ).pack(side="right", padx=(0, 16), pady=11)
+        ctk.CTkButton(ft, text="Guardar", width=110, height=34,
+                      fg_color=C["accent"], hover_color=C["accent2"],
+                      text_color="#0f0f13", font=ctk.CTkFont("Consolas", 12, "bold"),
+                      command=self._confirm
+                      ).pack(side="right", padx=0, pady=11)
+
+        self.textbox.focus_set()
+
+    def _on_search_change(self, _evt=None):
+        self._recompute_matches()
+
+    def _recompute_matches(self):
+        tb = self.textbox._textbox
+        tb.tag_remove("match", "1.0", "end")
+        tb.tag_remove("match_cur", "1.0", "end")
+        self._matches = []
+        self._match_idx = -1
+        query = self.search_entry.get()
+        if not query:
+            self.match_label.configure(text="")
+            return
+        start = "1.0"
+        while True:
+            pos = tb.search(query, start, stopindex="end", nocase=True)
+            if not pos:
+                break
+            end = f"{pos}+{len(query)}c"
+            self._matches.append((pos, end))
+            tb.tag_add("match", pos, end)
+            start = end
+        if self._matches:
+            self.match_label.configure(text=f"0/{len(self._matches)}")
+        else:
+            self.match_label.configure(text="0/0")
+
+    def _find_next(self, direction=1):
+        if not self._matches:
+            self._recompute_matches()
+        if not self._matches:
+            return
+        tb = self.textbox._textbox
+        if self._match_idx >= 0:
+            prev = self._matches[self._match_idx]
+            tb.tag_remove("match_cur", prev[0], prev[1])
+        self._match_idx = (self._match_idx + direction) % len(self._matches)
+        pos, end = self._matches[self._match_idx]
+        tb.tag_add("match_cur", pos, end)
+        tb.see(pos)
+        self.match_label.configure(text=f"{self._match_idx + 1}/{len(self._matches)}")
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+    def _confirm(self):
+        self.result = self.textbox.get("1.0", "end-1c")
+        self.destroy()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -471,16 +637,30 @@ class LoadModelDialog(ctk.CTkToplevel):
         self._slider(c, T("sl_rep_n"),    "repeat_last_n",  0,   512,  1,    int)
         self._slider(c, T("sl_seed"),     "seed",          -1, 99999,  1,    int)
 
-        ctk.CTkLabel(c, text=T("sys_prompt"),
+        sp_hdr = ctk.CTkFrame(c, fg_color="transparent")
+        sp_hdr.pack(fill="x", padx=16, pady=(10, 2))
+        ctk.CTkLabel(sp_hdr, text=T("sys_prompt"),
                      font=ctk.CTkFont("Consolas", 12), text_color=C["text"]
-                     ).pack(anchor="w", padx=16, pady=(10, 2))
-        sp = tk.StringVar()
+                     ).pack(side="left")
+        ctk.CTkButton(sp_hdr, text="⤢ Expandir", width=90, height=22,
+                      fg_color=C["card2"], hover_color=C["border"],
+                      text_color=C["sub"], font=ctk.CTkFont("Consolas", 10),
+                      command=self._expand_system_prompt
+                      ).pack(side="right")
+        self.sp_textbox = ctk.CTkTextbox(c, fg_color=C["input"],
+                                          text_color=C["text"],
+                                          font=ctk.CTkFont("Consolas", 12),
+                                          wrap="word", height=90)
+        self.sp_textbox.pack(fill="x", padx=16, pady=(0, 12))
+        sp = _MultilineVar(self.sp_textbox)
         self._vars["system_prompt"] = sp
-        ctk.CTkEntry(c, textvariable=sp,
-                      fg_color=C["input"], text_color=C["text"],
-                      font=ctk.CTkFont("Consolas", 12),
-                      placeholder_text=T("sys_prompt_ph"),
-                      height=32).pack(fill="x", padx=16, pady=(0, 12))
+
+    def _expand_system_prompt(self):
+        current = self._vars["system_prompt"].get()
+        dlg = TextEditorDialog(self, T("sys_prompt"), current)
+        self.wait_window(dlg)
+        if dlg.result is not None:
+            self._vars["system_prompt"].set(dlg.result)
 
     def _sec_flags(self, s):
         self._title(s, T("sec_flags"))
@@ -1890,10 +2070,12 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self._attached_image  = None    # ruta de imagen adjunta para vision
         self._attached_files  = []      # lista de archivos de texto adjuntos (py, html, etc.)
         self._wd_var          = tk.BooleanVar(value=self.settings.get("watchdog_auto_relaunch", False))
+        self.tg_bridge         = None   # instancia de TelegramBridge cuando está corriendo
 
         self._init_voice_state() if _VOICE_OK else None
         self._build_ui()
         self._check_server_on_start()
+        self._tg_autostart_check()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._load_sessions_from_disk()
 
@@ -2315,6 +2497,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # ────────────────────────────────────────────────────────────────
 
         self.nav_btns = {}
+        _tg_label = "Telegram" if self.settings.get("lang", "es") == "es" else "Telegram"
         for icon, label_key, cmd in [
             ("💬", "nav_chat",     self._show_chat),
             ("⚙️", "nav_server",  self._show_server),
@@ -2323,9 +2506,14 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             ("🌐", "nav_download", self._show_download),
             ("📡", "nav_api",      self._show_api_docs),
             ("🎤", "nav_voice",    self._show_voice),
+            ("📨", "nav_telegram", self._show_telegram),
             ("⚖️", "nav_about",   self._show_about),
         ]:
-            b = ctk.CTkButton(sb, text=f"  {icon}  {T(label_key)}",
+            try:
+                _label = T(label_key) if label_key != "nav_telegram" else _tg_label
+            except Exception:
+                _label = _tg_label if label_key == "nav_telegram" else label_key
+            b = ctk.CTkButton(sb, text=f"  {icon}  {_label}",
                                fg_color="transparent", hover_color=C["card"],
                                text_color=C["sub"], font=ctk.CTkFont("Consolas", 13),
                                anchor="w", height=40, command=cmd)
@@ -2398,6 +2586,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             "Descargar":   self._build_downloader(self.main),
             "API Docs":    self._build_api_docs(self.main),
             "Voz":         self._build_voice(self.main) if _VOICE_OK else ctk.CTkFrame(self.main),
+            "Telegram":    self._build_telegram(self.main),
             "Acerca de":   self._build_about(self.main),
         }
         self._show_chat()
@@ -2409,7 +2598,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         key_map = {
             "Chat": "nav_chat", "Servidor": "nav_server", "Logs": "nav_logs",
             "Info modelo": "nav_info", "Descargar": "nav_download", "API Docs": "nav_api",
-            "Voz": "nav_voice", "Acerca de": "nav_about",
+            "Voz": "nav_voice", "Telegram": "nav_telegram", "Acerca de": "nav_about",
         }
         active_key = key_map.get(name, name)
         for k, b in self.nav_btns.items():
@@ -2447,6 +2636,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self._current_session_id = cur_sid_backup
         self._refresh_history_list()
         self._check_server_on_start()
+        self._tg_autostart_check()
         self._detect_llama_version()
 
     def _show_chat(self):   self._show_frame("Chat")
@@ -2454,6 +2644,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     def _show_logs(self):   self._show_frame("Logs")
     def _show_info(self):   self._show_frame("Info modelo"); self._refresh_info()
     def _show_voice(self):  self._show_frame("Voz")
+    def _show_telegram(self): self._show_frame("Telegram")
 
     # ── Modal de modelo ───────────────────────────────────────────────────
 
@@ -2472,11 +2663,6 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
             self.settings["last_model"] = path
             save_settings(self.settings)
-            # Sincronizar system prompt al chat
-            sp = self.current_prof.get("system_prompt", "")
-            if sp and hasattr(self, "sys_entry"):
-                self.sys_entry.delete(0, "end")
-                self.sys_entry.insert(0, sp)
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
@@ -2579,7 +2765,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.btn_websearch.pack(side="right", padx=(0, 6), pady=10)
 
         # Toggle auto-continue (continuation loop cuando finish_reason == "length")
-        _autocont = self.settings.get("toggle_autocont", False)
+        _autocont = self.settings.get("toggle_autocont", True)
         self.autocont_var = tk.BooleanVar(value=_autocont)
         self.btn_autocont = ctk.CTkButton(
             hdr, text="🔁 AutoCont ON" if _autocont else "🔁 AutoCont",
@@ -2606,6 +2792,23 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         )
         self.btn_fstools.pack(side="right", padx=(0, 4), pady=10)
 
+        # Toggle investigación profunda (deep research): al enviar, en vez de
+        # chatear normal, descompone el tema en subpreguntas, busca cada una
+        # (SearXNG/DDG + fetch de las mejores páginas) y luego sintetiza un
+        # informe completo con el modelo.
+        _dr = self.settings.get("toggle_deepresearch", False)
+        self.deepresearch_var = tk.BooleanVar(value=_dr)
+        self.btn_deepresearch = ctk.CTkButton(
+            hdr, text="\U0001f52c Deep ON" if _dr else "\U0001f52c Deep",
+            width=100, height=30,
+            fg_color=C["accent2"] if _dr else C["card2"],
+            hover_color=C["border"],
+            text_color="#0f0f13" if _dr else C["sub"],
+            font=ctk.CTkFont("Consolas", 11, "bold"),
+            command=self._toggle_deepresearch
+        )
+        self.btn_deepresearch.pack(side="right", padx=(0, 4), pady=10)
+
         self.chat_display = ctk.CTkTextbox(f, fg_color=C["panel"],
                                             text_color=C["text"],
                                             font=ctk.CTkFont("Segoe UI", 14),
@@ -2618,19 +2821,6 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         tb.tag_config("think_hdr", foreground="#6457e0",
                       font=("Segoe UI", 12, "bold italic"))
 
-        sp_bar = ctk.CTkFrame(f, fg_color=C["card2"], height=38, corner_radius=0)
-        sp_bar.pack(fill="x"); sp_bar.pack_propagate(False)
-        sp_in = ctk.CTkFrame(sp_bar, fg_color="transparent")
-        sp_in.pack(fill="both", expand=True, padx=16, pady=4)
-        ctk.CTkLabel(sp_in, text=T("system_label"), font=ctk.CTkFont("Consolas", 11),
-                     text_color=C["sub"]).pack(side="left")
-        self.sys_entry = ctk.CTkEntry(sp_in, fg_color="transparent",
-                                       text_color=C["text"],
-                                       font=ctk.CTkFont("Consolas", 11),
-                                       placeholder_text=T("system_ph"),
-                                       border_width=0, height=28)
-        self.sys_entry.pack(side="left", fill="x", expand=True, padx=8)
-
         # Barra de chips para archivos adjuntos
         self.chips_bar = ctk.CTkFrame(f, fg_color=C["card2"], height=0, corner_radius=0)
         self.chips_bar.pack(fill="x")
@@ -2638,11 +2828,11 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.chips_inner = ctk.CTkFrame(self.chips_bar, fg_color="transparent")
         self.chips_inner.pack(fill="x", padx=12, pady=4)
 
-        inp = ctk.CTkFrame(f, fg_color=C["card"], height=80, corner_radius=0)
+        inp = ctk.CTkFrame(f, fg_color=C["card"], height=104, corner_radius=0)
         inp.pack(fill="x"); inp.pack_propagate(False)
         ii = ctk.CTkFrame(inp, fg_color="transparent")
         ii.pack(fill="both", expand=True, padx=16, pady=12)
-        self.chat_input = ctk.CTkTextbox(ii, height=44,
+        self.chat_input = ctk.CTkTextbox(ii, height=68,
                                           fg_color=C["input"], text_color=C["text"],
                                           font=ctk.CTkFont("Segoe UI", 14), corner_radius=8)
         self.chat_input.pack(side="left", fill="both", expand=True)
@@ -2814,6 +3004,23 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 text_color=C["sub"],
             )
         self.settings["toggle_autocont"] = self.autocont_var.get()
+        save_settings(self.settings)
+
+    def _toggle_deepresearch(self):
+        self.deepresearch_var.set(not self.deepresearch_var.get())
+        if self.deepresearch_var.get():
+            self.btn_deepresearch.configure(
+                text="\U0001f52c Deep ON",
+                fg_color=C["accent2"],
+                text_color="#0f0f13",
+            )
+        else:
+            self.btn_deepresearch.configure(
+                text="\U0001f52c Deep",
+                fg_color=C["card2"],
+                text_color=C["sub"],
+            )
+        self.settings["toggle_deepresearch"] = self.deepresearch_var.get()
         save_settings(self.settings)
 
     def _stop_gen(self):
@@ -3060,7 +3267,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self._clear_attached_image()
         self._clear_attached_file()
 
-        sp = self.sys_entry.get().strip() or self.current_prof.get("system_prompt", "")
+        sp = self.current_prof.get("system_prompt", "")
 
         # Construir contenido del mensaje
         if img_path and os.path.isfile(img_path):
@@ -3134,7 +3341,13 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.btn_stop_gen.configure(state="normal")
         use_web = self.websearch_var.get()
         use_fs = self.fstools_var.get()
-        threading.Thread(target=self._api, args=(msgs, use_web, use_fs), daemon=True).start()
+
+        # Investigación profunda: solo aplica a peticiones de texto puro
+        # (sin imagen ni archivos adjuntos), que es donde tiene sentido.
+        if self.deepresearch_var.get() and not img_path and not files_list and txt.strip():
+            threading.Thread(target=self._deep_research, args=(txt.strip(), sp), daemon=True).start()
+        else:
+            threading.Thread(target=self._api, args=(msgs, use_web, use_fs), daemon=True).start()
 
     def _check_code_blocks(self, response_text: str):
         """
@@ -3204,52 +3417,377 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
     # ── Web search helper (DuckDuckGo, sin API key) ──────────────────────
 
+    # SearXNG local (Docker). Config de referencia — ajusta el puerto/nombre
+    # del contenedor si tu instalación usa otros.
+    SEARXNG_URL       = "http://localhost:8888/search"
+    SEARXNG_CONTAINER = "searxng"
+
+    def _searxng_query_once(self, query, headers, timeout=8):
+        """Una sola llamada a la API JSON de SearXNG. Devuelve el dict json o
+        None si el contenedor no responde, está parado, o el formato json no
+        está activado en su settings.yml (en ese caso SearXNG devuelve HTML/403
+        en vez de JSON y aquí no se puede parsear, así que se trata igual que
+        'sin resultados')."""
+        try:
+            resp = requests.get(self.SEARXNG_URL,
+                                 params={"q": query, "format": "json"},
+                                 headers=headers, timeout=timeout)
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        except Exception:
+            return None
+
+    def _searxng_try_autostart(self):
+        """Si el contenedor Docker 'searxng' existe pero está parado, intenta
+        arrancarlo. No hace nada (y no falla) si Docker no está instalado o
+        el contenedor no existe con ese nombre."""
+        try:
+            subprocess.run(["docker", "start", self.SEARXNG_CONTAINER],
+                            capture_output=True, timeout=15,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            time.sleep(2.5)
+            return True
+        except Exception:
+            return False
+
     def _web_search(self, query):
         """
-        Busca en DuckDuckGo usando su endpoint HTML público.
-        Devuelve string con los resultados para meter en el contexto.
+        Busca primero en SearXNG (Docker local, localhost:8888) — es el motor
+        propio, sin bloqueos ni CAPTCHAs. Si no responde, intenta arrancar el
+        contenedor Docker una vez por si simplemente estaba parado. Si sigue
+        sin responder (p. ej. el formato 'json' no está activado en su
+        settings.yml), cae a DuckDuckGo como red de seguridad.
+        Siempre se añade la fecha de hoy al resultado para que el modelo pueda
+        juzgar si algo ya ha pasado o sigue vigente.
+        """
+        from datetime import datetime as _dt
+        today_str = _dt.now().strftime("%d/%m/%Y")
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        sections = [f"[Fecha de hoy: {today_str}. Ten esto en cuenta para juzgar si algo ya ha pasado o sigue vigente.]"]
+        searx_ok = False
+        searx_tried_autostart = False
+
+        data = self._searxng_query_once(query, headers)
+        if data is None:
+            searx_tried_autostart = self._searxng_try_autostart()
+            if searx_tried_autostart:
+                data = self._searxng_query_once(query, headers)
+
+        if data:
+            results = [r for r in data.get("results", []) if r.get("title") or r.get("content")][:6]
+            if results:
+                searx_ok = True
+                organic = []
+                for r in results:
+                    title   = (r.get("title") or "").strip()
+                    content = (r.get("content") or "").strip()
+                    url     = r.get("url", "")
+                    organic.append(f"- {title}\n  {content}\n  {url}")
+                sections.append("Resultados de búsqueda (SearXNG):\n" + "\n".join(organic))
+            # SearXNG a veces devuelve una respuesta directa (calculadora,
+            # conversor, etc.) en 'answers' o 'infoboxes'.
+            for ans in (data.get("answers") or [])[:2]:
+                if isinstance(ans, str) and ans.strip():
+                    searx_ok = True
+                    sections.append(f"Respuesta directa: {ans.strip()}")
+            for info in (data.get("infoboxes") or [])[:1]:
+                content = (info.get("content") or "").strip() if isinstance(info, dict) else ""
+                if content:
+                    searx_ok = True
+                    sections.append(f"Info: {content}")
+
+        if not searx_ok:
+            # Red de seguridad: DuckDuckGo (menos fiable, puede devolver poco
+            # o nada, o bloquear peticiones automatizadas).
+            try:
+                import re as _re
+                resp2 = requests.get(
+                    "https://html.duckduckgo.com/html/",
+                    params={"q": query}, headers=headers, timeout=10
+                )
+                titles   = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                                        resp2.text, _re.DOTALL)
+                snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>',
+                                        resp2.text, _re.DOTALL)
+                organic = []
+                for i in range(min(len(titles), len(snippets), 6)):
+                    url, title = titles[i]
+                    title = _re.sub(r'<[^>]+>', '', title).strip()
+                    snip  = _re.sub(r'<[^>]+>', '', snippets[i]).strip()
+                    if title or snip:
+                        organic.append(f"- {title}\n  {snip}\n  {url}")
+                if organic:
+                    sections.append("Resultados de búsqueda (DuckDuckGo, sin SearXNG):\n" + "\n".join(organic))
+            except Exception:
+                pass
+            try:
+                resp = requests.get(
+                    "https://api.duckduckgo.com/",
+                    params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                    headers=headers, timeout=10
+                )
+                ddata = resp.json()
+                if ddata.get("AbstractText"):
+                    extra = (f"Resumen enciclopédico (puede no reflejar el estado más reciente): "
+                             f"{ddata['AbstractText']}")
+                    if ddata.get("AbstractURL"):
+                        extra += f"\nFuente: {ddata['AbstractURL']}"
+                    sections.append(extra)
+            except Exception:
+                pass
+
+        if len(sections) == 1:
+            hint = (" SearXNG (Docker, localhost:8888) no devolvió resultados: comprueba que el "
+                    "contenedor 'searxng' esté arrancado y que 'json' esté en 'search: formats:' "
+                    "de su settings.yml (reinicia el contenedor tras editarlo).")
+            return f"[Fecha de hoy: {today_str}] No se encontraron resultados para: {query}.{hint}"
+        return "\n\n".join(sections)
+
+    # ── Fetch URL helper (lee el contenido de una pagina concreta) ───────
+
+    def _fetch_url(self, url):
+        """
+        Descarga una URL y devuelve su contenido de texto limpio (sin HTML)
+        para que el modelo pueda leerlo y responder sobre el.
         """
         try:
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            # DuckDuckGo instant answer API
-            resp = requests.get(
-                "https://api.duckduckgo.com/",
-                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-                headers=headers, timeout=10
-            )
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+
+            html = resp.text
+
+            # Quitar bloques que no aportan texto legible
+            html = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+            html = re.sub(r'<style[^>]*>.*?</style>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+            html = re.sub(r'<!--.*?-->', ' ', html, flags=re.DOTALL)
+            html = re.sub(r'<(nav|footer|header)[^>]*>.*?</\1>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+
+            # Quitar el resto de etiquetas HTML
+            text = re.sub(r'<[^>]+>', ' ', html)
+
+            # Decodificar entidades HTML mas comunes
+            entities = {
+                "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
+                "&quot;": '"', "&#39;": "'", "&aacute;": "á", "&eacute;": "é",
+                "&iacute;": "í", "&oacute;": "ó", "&uacute;": "ú", "&ntilde;": "ñ",
+            }
+            for ent, ch in entities.items():
+                text = text.replace(ent, ch)
+
+            # Colapsar espacios/saltos de linea repetidos
+            text = re.sub(r'[ \t]+', ' ', text)
+            text = re.sub(r'\n\s*\n+', '\n\n', text)
+            text = text.strip()
+
+            if not text:
+                return f"No se pudo extraer contenido legible de: {url}"
+
+            # Limitar tamaño para no reventar el contexto
+            max_chars = 8000
+            if len(text) > max_chars:
+                text = text[:max_chars] + "\n\n[...contenido truncado...]"
+
+            return f"Contenido de {url}:\n\n{text}"
+
+        except requests.exceptions.Timeout:
+            return f"Error: tiempo de espera agotado al intentar acceder a {url}"
+        except requests.exceptions.ConnectionError:
+            return f"Error: no se pudo conectar a {url}"
+        except Exception as e:
+            return f"Error al leer la URL: {e}"
+
+    # ── Investigación profunda (deep research) ────────────────────────────
+    # A diferencia de web_search/fetch_url sueltas (que el modelo usa a su
+    # criterio y normalmente 1-2 veces), este modo fuerza un proceso
+    # estructurado de varias rondas de búsqueda + lectura antes de redactar.
+
+    def _deep_research_progress(self, text):
+        """Inserta una línea de progreso en el chat (hilo seguro)."""
+        self.after(0, lambda t=text: (
+            self.chat_display.configure(state="normal"),
+            self.chat_display._textbox.insert("end", f"\n{t}\n", "think_hdr"),
+            self.chat_display.see("end"),
+            self.chat_display.configure(state="disabled")
+        ))
+
+    def _llm_plain(self, prompt, system="", max_tokens=900, temperature=0.4):
+        """Llamada simple (no streaming) al backend, para pasos internos del
+        deep research (planificación) que no necesitan mostrarse palabra a
+        palabra en el chat. Devuelve '' si algo falla."""
+        port = self.settings.get("port", "8080")
+        msgs = ([{"role": "system", "content": system}] if system else []) + \
+               [{"role": "user", "content": prompt}]
+        payload = {
+            "model": "local",
+            "messages": msgs,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        try:
+            resp = requests.post(f"http://127.0.0.1:{port}/v1/chat/completions",
+                                  json=payload, timeout=90)
+            resp.raise_for_status()
             data = resp.json()
-            results = []
+            return data["choices"][0]["message"]["content"].strip()
+        except Exception:
+            return ""
 
-            # Abstract (respuesta directa)
-            if data.get("AbstractText"):
-                results.append(f"Resumen: {data['AbstractText']}")
-                if data.get("AbstractURL"):
-                    results.append(f"Fuente: {data['AbstractURL']}")
+    def _dr_extract_urls(self, search_text, limit=3, seen=None):
+        """Saca URLs del texto formateado que devuelve _web_search, evitando
+        repetir una URL ya leída en un subtema anterior."""
+        seen = seen if seen is not None else set()
+        out = []
+        for u in re.findall(r'https?://[^\s\)\]]+', search_text):
+            u = u.rstrip('.,;')
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(u)
+            if len(out) >= limit:
+                break
+        return out
 
-            # RelatedTopics
-            for topic in data.get("RelatedTopics", [])[:5]:
-                if isinstance(topic, dict) and topic.get("Text"):
-                    results.append(f"- {topic['Text']}")
+    def _deep_research(self, topic, sp):
+        """
+        Modo 'investigación profunda': en vez de dejar que el modelo decida
+        cuánto buscar (normalmente se conforma con 1-2 búsquedas), se fuerza
+        un proceso de 3 pasos:
+          1. El modelo descompone el tema en ~10 subpreguntas que cubren
+             ángulos distintos.
+          2. Por cada subpregunta se busca en la web (SearXNG/DDG) y se lee
+             el contenido completo de 2-3 de las mejores páginas.
+          3. Todo eso se junta en un dossier y se le pide al modelo un
+             informe final estructurado, con fuentes.
+        Se puede cancelar en cualquier momento con el botón de Stop; si se
+        cancela a mitad de la investigación, igualmente se redacta un
+        informe con lo recopilado hasta ese punto (no se pierde el trabajo).
+        """
+        N_SUBTOPICS = 10
+        FETCH_PER_SUBTOPIC = 3
+        MAX_CHARS_PER_FETCH = 3000
+        MAX_CHARS_PER_SUBTOPIC_SEARCH = 1500
 
-            if results:
-                return "\n".join(results)
+        try:
+            self._deep_research_progress(f"\U0001f52c Investigación profunda iniciada: {topic}")
 
-            # Fallback: DuckDuckGo HTML scrape ligero
-            resp2 = requests.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                headers=headers, timeout=10
+            # ── 1. Planificación ────────────────────────────────────────
+            self._deep_research_progress("\U0001f9ed Planificando subtemas de investigación...")
+            plan_prompt = (
+                f"Vas a preparar un plan de investigación exhaustivo sobre el siguiente tema:\n\n"
+                f"\"{topic}\"\n\n"
+                f"Genera EXACTAMENTE {N_SUBTOPICS} subpreguntas de búsqueda que, juntas, cubran el "
+                f"tema desde ángulos distintos y complementarios (contexto/definición, datos y cifras "
+                f"actuales, comparativas o alternativas, ventajas/desventajas, opiniones o "
+                f"controversia, casos prácticos, tendencias recientes, fuentes oficiales, etc. — "
+                f"adapta los ángulos al tema concreto). Cada subpregunta debe ser una consulta de "
+                f"búsqueda concreta y autosuficiente (no uses 'esto', 'lo anterior', etc.).\n\n"
+                f"Responde SOLO con la lista, una subpregunta por línea, numeradas del 1 al "
+                f"{N_SUBTOPICS}. Sin explicaciones, sin texto antes ni después."
             )
-            import re as _re
-            snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', resp2.text, _re.DOTALL)
-            snippets = [_re.sub(r'<[^>]+>', '', s).strip() for s in snippets[:5]]
-            if snippets:
-                return "\n".join(f"- {s}" for s in snippets if s)
+            plan_raw = self._llm_plain(plan_prompt, system=sp, max_tokens=700, temperature=0.5)
+            subtopics = []
+            for line in plan_raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                line = re.sub(r'^\d+[\.\)\-]\s*', '', line).strip('-• ').strip()
+                if line:
+                    subtopics.append(line)
+            subtopics = subtopics[:N_SUBTOPICS]
+            if not subtopics:
+                subtopics = [topic]  # fallback si el plan no se pudo parsear
 
-            return "No se encontraron resultados para: " + query
+            self._deep_research_progress(
+                f"\U0001f4cb Plan de investigación ({len(subtopics)} subtemas):\n" +
+                "\n".join(f"  {i+1}. {s}" for i, s in enumerate(subtopics))
+            )
+
+            # ── 2. Investigación por subtema ────────────────────────────
+            dossier_parts = []
+            seen_urls = set()
+            for i, sub in enumerate(subtopics, 1):
+                if self._stop_generation:
+                    self._deep_research_progress("\u23f9 Investigación detenida por el usuario.")
+                    break
+
+                self._deep_research_progress(f"\U0001f50e [{i}/{len(subtopics)}] Buscando: {sub}")
+                search_text = self._web_search(sub)
+                self._log(f"[DeepResearch] search: {sub}")
+
+                urls = self._dr_extract_urls(search_text, limit=FETCH_PER_SUBTOPIC, seen=seen_urls)
+                fetched_parts = []
+                for url in urls:
+                    if self._stop_generation:
+                        break
+                    self._deep_research_progress(f"   \U0001f4c4 Leyendo fuente: {url}")
+                    page = self._fetch_url(url)
+                    self._log(f"[DeepResearch] fetch: {url}")
+                    if page and not page.startswith("Error"):
+                        if len(page) > MAX_CHARS_PER_FETCH:
+                            page = page[:MAX_CHARS_PER_FETCH] + "\n[...truncado...]"
+                        fetched_parts.append(page)
+
+                search_snip = search_text
+                if len(search_snip) > MAX_CHARS_PER_SUBTOPIC_SEARCH:
+                    search_snip = search_snip[:MAX_CHARS_PER_SUBTOPIC_SEARCH] + "\n[...truncado...]"
+
+                section = f"### Subtema {i}: {sub}\n\n{search_snip}"
+                if fetched_parts:
+                    section += "\n\n" + "\n\n".join(fetched_parts)
+                dossier_parts.append(section)
+
+            if not dossier_parts:
+                self._deep_research_progress("\u26a0 No se pudo recopilar ninguna información. Abortando.")
+                self.after(0, lambda: (
+                    self.btn_send.configure(state="normal", text=T("send")),
+                    self.btn_stop_gen.configure(state="disabled"),
+                ))
+                return
+
+            self._deep_research_progress("\U0001f4dd Redactando informe final con toda la información recopilada...")
+            dossier = "\n\n---\n\n".join(dossier_parts)
+
+            # ── 3. Síntesis final ───────────────────────────────────────
+            synth_prompt = (
+                f"Has investigado a fondo el siguiente tema: \"{topic}\"\n\n"
+                f"Aquí tienes el dossier con resultados de búsqueda y contenido extraído de varias "
+                f"páginas web, organizado por subtemas:\n\n"
+                f"{dossier}\n\n"
+                f"---\n\n"
+                f"Con toda esta información, escribe un INFORME COMPLETO Y BIEN ESTRUCTURADO sobre "
+                f"\"{topic}\". Requisitos:\n"
+                f"- Estructura con títulos y subtítulos claros (Introducción, varias secciones "
+                f"temáticas, Conclusión).\n"
+                f"- Sintetiza y contrasta la información de las distintas fuentes, no te limites a "
+                f"listar lo que dice cada una por separado.\n"
+                f"- Si hay datos, cifras o hechos concretos, inclúyelos.\n"
+                f"- Si distintas fuentes se contradicen entre sí, menciónalo.\n"
+                f"- Al final, añade una sección 'Fuentes' listando las URLs usadas.\n"
+                f"- Escribe en español, con un tono claro y directo, evitando relleno innecesario."
+            )
+            final_messages = ([{"role": "system", "content": sp}] if sp else []) + [
+                {"role": "user", "content": synth_prompt}
+            ]
+
+            # Reutiliza el pipeline normal de streaming (_api) para la respuesta
+            # final: se ve escribir en vivo, se detectan bloques de código, se
+            # guarda la sesión, stats, TTS... igual que una respuesta normal.
+            self._stop_generation = False
+            self._api(final_messages, use_web=False, use_fs=False)
 
         except Exception as e:
-            return f"Error en búsqueda web: {e}"
+            self.after(0, lambda err=str(e): self._append("system", f"\u26a0 Error en investigación profunda: {err}"))
+            self.after(0, lambda: (
+                self.btn_send.configure(state="normal", text=T("send")),
+                self.btn_stop_gen.configure(state="disabled"),
+            ))
 
     # ── File tools (acceso a carpeta local, confinado a fs_base_dir) ─────
 
@@ -3308,6 +3846,134 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             return f"Archivo escrito: {rel_path} ({len(content or '')} caracteres)"
         except Exception as e:
             return f"Error al escribir archivo: {e}"
+
+    def _fs_read_file(self, rel_path):
+        try:
+            target = self._fs_safe_path(rel_path)
+            if not target.is_file():
+                return f"No existe el archivo: {rel_path}"
+            max_chars = 20000
+            text = target.read_text(encoding="utf-8", errors="replace")
+            if len(text) > max_chars:
+                text = text[:max_chars] + "\n\n[...archivo truncado, demasiado largo...]"
+            return text if text else "(archivo vacio)"
+        except Exception as e:
+            return f"Error al leer archivo: {e}"
+
+    def _fs_append_file(self, rel_path, content):
+        try:
+            target = self._fs_safe_path(rel_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(content or "")
+            return f"Contenido añadido a: {rel_path} (+{len(content or '')} caracteres)"
+        except Exception as e:
+            return f"Error al añadir contenido: {e}"
+
+    def _fs_edit_file(self, rel_path, find, replace):
+        try:
+            target = self._fs_safe_path(rel_path)
+            if not target.is_file():
+                return f"No existe el archivo: {rel_path}"
+            text = target.read_text(encoding="utf-8", errors="replace")
+            count = text.count(find)
+            if count == 0:
+                return f"No se encontró el texto a reemplazar en {rel_path}"
+            text = text.replace(find, replace or "")
+            target.write_text(text, encoding="utf-8")
+            return f"Editado {rel_path}: {count} coincidencia(s) reemplazada(s)"
+        except Exception as e:
+            return f"Error al editar archivo: {e}"
+
+    def _fs_delete_file(self, rel_path):
+        try:
+            target = self._fs_safe_path(rel_path)
+            if not target.exists():
+                return f"No existe: {rel_path}"
+            if target.is_dir():
+                return f"Es una carpeta, usa delete_dir en su lugar: {rel_path}"
+            target.unlink()
+            return f"Archivo eliminado: {rel_path}"
+        except Exception as e:
+            return f"Error al eliminar archivo: {e}"
+
+    def _fs_delete_dir(self, rel_path, recursive=False):
+        try:
+            target = self._fs_safe_path(rel_path)
+            if not target.exists():
+                return f"No existe: {rel_path}"
+            if not target.is_dir():
+                return f"No es una carpeta: {rel_path}"
+            if target == self._fs_safe_path(""):
+                return "No se puede eliminar la carpeta base"
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()  # falla si no esta vacia
+            return f"Carpeta eliminada: {rel_path}"
+        except OSError as e:
+            return f"Error al eliminar carpeta (¿no estaba vacia? usa recursive=true): {e}"
+        except Exception as e:
+            return f"Error al eliminar carpeta: {e}"
+
+    def _fs_copy_file(self, src_rel, dst_rel):
+        try:
+            src = self._fs_safe_path(src_rel)
+            dst = self._fs_safe_path(dst_rel)
+            if not src.exists():
+                return f"No existe el origen: {src_rel}"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            return f"Copiado: {src_rel} -> {dst_rel}"
+        except Exception as e:
+            return f"Error al copiar: {e}"
+
+    def _fs_search_files(self, pattern, rel_path=""):
+        try:
+            base = self._fs_safe_path(rel_path)
+            if not base.is_dir():
+                return f"No es una carpeta: {rel_path or '.'}"
+            matches = sorted(base.rglob(pattern))
+            base_root = self._fs_safe_path("")
+            if not matches:
+                return f"Sin resultados para el patron: {pattern}"
+            lines = []
+            for m in matches[:100]:
+                rel = m.relative_to(base_root)
+                kind = "DIR " if m.is_dir() else "FILE"
+                lines.append(f"[{kind}] {rel}")
+            extra = f"\n(+{len(matches) - 100} resultados mas, refina el patron)" if len(matches) > 100 else ""
+            return "\n".join(lines) + extra
+        except Exception as e:
+            return f"Error al buscar: {e}"
+
+    def _fs_run_command(self, command):
+        try:
+            base = self._fs_safe_path("")
+            result = subprocess.run(
+                command, shell=True, cwd=str(base),
+                capture_output=True, text=True, timeout=60
+            )
+            out = (result.stdout or "").strip()
+            err = (result.stderr or "").strip()
+            max_chars = 4000
+            if len(out) > max_chars:
+                out = out[:max_chars] + "\n[...salida truncada...]"
+            if len(err) > max_chars:
+                err = err[:max_chars] + "\n[...error truncado...]"
+            parts = [f"[exit code {result.returncode}]"]
+            if out:
+                parts.append(f"stdout:\n{out}")
+            if err:
+                parts.append(f"stderr:\n{err}")
+            return "\n\n".join(parts)
+        except subprocess.TimeoutExpired:
+            return "Error: el comando tardó demasiado (timeout de 60s)"
+        except Exception as e:
+            return f"Error al ejecutar comando: {e}"
 
     def _fs_describe_image(self, rel_path, question=""):
         """
@@ -3379,6 +4045,19 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     "required": ["query"]
                 }
             }
+        }, {
+            "type": "function",
+            "function": {
+                "name": "fetch_url",
+                "description": "Entra en una URL/link concreto y lee su contenido completo. Usala cuando el usuario pegue un link o pida leer/resumir/analizar el contenido de una pagina web especifica.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "La URL completa a leer, ej. https://ejemplo.com/articulo"}
+                    },
+                    "required": ["url"]
+                }
+            }
         }]
 
         FS_BASE_LABEL = self.settings.get("fs_base_dir", "(sin configurar)")
@@ -3445,7 +4124,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 "type": "function",
                 "function": {
                     "name": "write_file",
-                    "description": "Crea o sobrescribe un archivo de texto (.txt, .md, etc) dentro de la carpeta permitida con el contenido indicado.",
+                    "description": "Crea o sobrescribe por completo un archivo de texto (.txt, .md, etc) dentro de la carpeta permitida con el contenido indicado.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -3453,6 +4132,124 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                             "content": {"type": "string", "description": "Contenido de texto a escribir en el archivo"}
                         },
                         "required": ["path", "content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Lee y devuelve el contenido completo de un archivo de texto dentro de la carpeta permitida. Usala antes de editar un archivo para saber que contiene.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa del archivo a leer"}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "append_file",
+                    "description": "Añade contenido al final de un archivo de texto existente (o lo crea si no existe) sin borrar lo que ya tenia.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa del archivo"},
+                            "content": {"type": "string", "description": "Texto a añadir al final del archivo"}
+                        },
+                        "required": ["path", "content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit_file",
+                    "description": "Edita un archivo existente reemplazando un fragmento de texto concreto (find) por otro (replace), sin reescribir el archivo entero. Util para cambios puntuales.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa del archivo a editar"},
+                            "find": {"type": "string", "description": "Texto exacto a buscar dentro del archivo"},
+                            "replace": {"type": "string", "description": "Texto que sustituira al texto encontrado"}
+                        },
+                        "required": ["path", "find", "replace"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_file",
+                    "description": "Elimina permanentemente un archivo dentro de la carpeta permitida.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa del archivo a eliminar"}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_dir",
+                    "description": "Elimina una carpeta dentro de la carpeta permitida. Por defecto solo borra carpetas vacias; usa recursive=true para borrar una carpeta con contenido dentro.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Ruta relativa de la carpeta a eliminar"},
+                            "recursive": {"type": "boolean", "description": "Si es true, borra la carpeta aunque tenga archivos dentro"}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "copy_file",
+                    "description": "Copia un archivo o carpeta dentro de la carpeta permitida a otra ubicacion, manteniendo el original.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "src": {"type": "string", "description": "Ruta relativa de origen (archivo o carpeta)"},
+                            "dst": {"type": "string", "description": "Ruta relativa de destino"}
+                        },
+                        "required": ["src", "dst"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_files",
+                    "description": "Busca archivos o carpetas por nombre/patron (estilo glob, ej. '*.png', '**/*.txt') dentro de la carpeta permitida, incluyendo subcarpetas.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string", "description": "Patron de busqueda estilo glob, ej. '*.jpg' o '**/informe*.pdf'"},
+                            "path": {"type": "string", "description": "Subcarpeta relativa donde empezar la busqueda. Vacio para buscar desde la raiz"}
+                        },
+                        "required": ["pattern"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_command",
+                    "description": "Ejecuta un comando de terminal dentro de la carpeta permitida (por ejemplo comandos de sistema, scripts, git, pip, etc). Devuelve codigo de salida, stdout y stderr. Usalo con cuidado, especialmente con comandos que modifiquen o borren datos.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "description": "Comando a ejecutar tal cual en la terminal, ej. 'dir' o 'python script.py'"}
+                        },
+                        "required": ["command"]
                     }
                 }
             },
@@ -3469,20 +4266,49 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 return self._fs_move_file(args.get("src", ""), args.get("dst", ""))
             if name == "write_file":
                 return self._fs_write_file(args.get("path", ""), args.get("content", ""))
+            if name == "read_file":
+                return self._fs_read_file(args.get("path", ""))
+            if name == "append_file":
+                return self._fs_append_file(args.get("path", ""), args.get("content", ""))
+            if name == "edit_file":
+                return self._fs_edit_file(args.get("path", ""), args.get("find", ""), args.get("replace", ""))
+            if name == "delete_file":
+                return self._fs_delete_file(args.get("path", ""))
+            if name == "delete_dir":
+                return self._fs_delete_dir(args.get("path", ""), args.get("recursive", False))
+            if name == "copy_file":
+                return self._fs_copy_file(args.get("src", ""), args.get("dst", ""))
+            if name == "search_files":
+                return self._fs_search_files(args.get("pattern", "*"), args.get("path", ""))
+            if name == "run_command":
+                return self._fs_run_command(args.get("command", ""))
             return f"Tool desconocida: {name}"
 
         try:
             current_messages = list(messages)
-            max_tool_rounds = 5
-            max_autocont_rounds = 10  # máximo de continuaciones automáticas
+            max_tool_rounds = 40  # limite de seguridad para encadenar tool calls
+            max_autocont_rounds = 10  # máximo de continuaciones automáticas por corte de tokens
             _autocont_count = 0
 
             for tool_round in range(max_tool_rounds + max_autocont_rounds + 1):
+                _cfg_max_tok = int(p.get("max_tokens", 2048))
+                if use_fs and _cfg_max_tok > 0:
+                    # En modo Files, escribir/editar archivos completos suele requerir
+                    # muchos más tokens que una respuesta de chat normal; si el usuario
+                    # dejó el valor bajo, lo subimos para evitar cortes constantes en
+                    # tool calls de write_file/edit_file. Si además el thinking está
+                    # activo, ese margen se come el thinking_budget antes de llegar
+                    # siquiera a escribir el tool call — así que se lo sumamos aparte
+                    # para garantizar que quede presupuesto real para la salida.
+                    _fs_floor = 8192
+                    if self.enable_thinking_var.get():
+                        _fs_floor += int(self.reasoning_budget_var.get() or 0)
+                    _cfg_max_tok = max(_cfg_max_tok, _fs_floor)
                 payload = {
                     "model": "local",
                     "messages": current_messages,
                     "temperature":    float(p.get("temperature", 0.7)),
-                    "max_tokens":     int(p.get("max_tokens", 2048)) if int(p.get("max_tokens", 2048)) > 0 else -1,
+                    "max_tokens":     _cfg_max_tok if _cfg_max_tok > 0 else -1,
                     "top_k":          int(p.get("top_k", 40)),
                     "top_p":          float(p.get("top_p", 0.95)),
                     "min_p":          float(p.get("min_p", 0.05)),
@@ -3497,15 +4323,14 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 if self.enable_thinking_var.get() and self._reasoning_control_supported:
                     payload["reasoning_control"] = True
                 self._current_gen_id = None  # se rellena con el primer chunk de esta ronda
-                if tool_round < max_tool_rounds:
-                    active_tools = []
-                    if use_web:
-                        active_tools += WEB_TOOL
-                    if use_fs and self.settings.get("fs_base_dir"):
-                        active_tools += FS_TOOLS
-                    if active_tools:
-                        payload["tools"] = active_tools
-                        payload["tool_choice"] = "auto"
+                active_tools = []
+                if use_web:
+                    active_tools += WEB_TOOL
+                if use_fs and self.settings.get("fs_base_dir"):
+                    active_tools += FS_TOOLS
+                if active_tools:
+                    payload["tools"] = active_tools
+                    payload["tool_choice"] = "auto"
 
                 resp = requests.post(
                     f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -3737,6 +4562,59 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                         if "timings" in chunk: timings = chunk["timings"]
                     except: pass
 
+                # ── Tool call cortado por límite de tokens ─────────────────────
+                # Si el modelo estaba escribiendo argumentos de un tool call (ej. write_file
+                # con contenido largo) y se acabó el max_tokens, finish_reason llega como
+                # "length" en vez de "tool_calls". Antes esto perdía el tool call entero
+                # (nunca se procesaba) y el auto-continue mandaba un mensaje de asistente
+                # vacío, dejando al modelo sin memoria de lo que había escrito.
+                if (use_web or use_fs) and tool_calls_acc and finish_reason == "length" \
+                        and self.autocont_var.get() and not self._stop_generation \
+                        and _autocont_count < max_autocont_rounds:
+                    _autocont_count += 1
+                    tc_list_partial = []
+                    for tidx in sorted(tool_calls_acc.keys()):
+                        tc = tool_calls_acc[tidx]
+                        tc_list_partial.append({
+                            "id": tc["id"] or f"call_{tidx}",
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": tc["arguments"]}
+                        })
+                    current_messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tc_list_partial
+                    })
+                    for tc in tc_list_partial:
+                        name = tc["function"]["name"]
+                        n_chars = len(tc["function"]["arguments"] or "")
+                        current_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"] or "call_0",
+                            "content": (
+                                f"[ERROR] La llamada a '{name}' se cortó por límite de tokens "
+                                f"tras {n_chars} caracteres de argumentos — el JSON quedó incompleto "
+                                f"y NO se ejecutó, no se ha escrito/modificado nada todavía. "
+                                f"Vuelve a intentarlo: si es write_file/append_file con contenido largo, "
+                                f"divide el contenido en trozos más pequeños usando varias llamadas a "
+                                f"append_file (primero write_file para crear/vaciar, luego append_file "
+                                f"repetidas veces), o usa edit_file con cambios puntuales en vez de "
+                                f"reescribir el archivo entero."
+                            )
+                        })
+                    self.after(0, lambda: (
+                        self.chat_display.configure(state="normal"),
+                        self.chat_display._textbox.insert("end",
+                            "\n⚠ tool call cortado por tokens, reintentando...\n", "think_hdr"),
+                        self.chat_display.configure(state="disabled")
+                    ))
+                    full = ""
+                    full_raw = ""
+                    in_think = False
+                    native_in_think = False
+                    think_buf = ""
+                    continue
+
                 # ── Procesar tool calls ───────────────────────────────────────
                 if (use_web or use_fs) and tool_calls_acc and finish_reason == "tool_calls":
                     tc_list = []
@@ -3759,6 +4637,14 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                         "create_dir": "\U0001f4c1",
                         "move_file": "\U0001f4e6",
                         "write_file": "\U0001f4dd",
+                        "read_file": "\U0001f4c4",
+                        "append_file": "\u2795",
+                        "edit_file": "\u270f\ufe0f",
+                        "delete_file": "\U0001f5d1",
+                        "delete_dir": "\U0001f5d1",
+                        "copy_file": "\U0001f4cb",
+                        "search_files": "\U0001f50d",
+                        "run_command": "\u2699\ufe0f",
                     }
 
                     for tc in tc_list:
@@ -3778,6 +4664,16 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                             ))
                             result = self._web_search(query)
                             self._log(f"[Web] {query}")
+                        elif name == "fetch_url":
+                            url = args.get("url", "")
+                            self.after(0, lambda u=url: (
+                                self.chat_display.configure(state="normal"),
+                                self.chat_display._textbox.insert("end",
+                                    f"\n\U0001f517 Leyendo: {u}\n", "think_hdr"),
+                                self.chat_display.configure(state="disabled")
+                            ))
+                            result = self._fetch_url(url)
+                            self._log(f"[Fetch] {url}")
                         else:
                             icon = FS_ICONS.get(name, "\U0001f527")
                             label = " ".join(str(v) for v in args.values()) if args else ""
@@ -4244,6 +5140,275 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
+    # ── Telegram ─────────────────────────────────────────────────────────
+
+    def _build_telegram(self, p):
+        f = ctk.CTkFrame(p, fg_color=C["bg"], corner_radius=0)
+        hdr = ctk.CTkFrame(f, fg_color=C["panel"], height=52, corner_radius=0)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="📨 Telegram",
+                     font=ctk.CTkFont("Consolas", 15, "bold"),
+                     text_color=C["text"]).pack(side="left", padx=20)
+        self.tg_status_dot = ctk.CTkLabel(hdr, text="●", font=ctk.CTkFont(size=14),
+                                           text_color=C["red"])
+        self.tg_status_dot.pack(side="right", padx=(0, 20))
+        self.tg_status_label = ctk.CTkLabel(hdr, text="Bot detenido",
+                                             font=ctk.CTkFont("Consolas", 11), text_color=C["sub"])
+        self.tg_status_label.pack(side="right")
+
+        body = ctk.CTkScrollableFrame(f, fg_color=C["bg"], corner_radius=0)
+        body.pack(fill="both", expand=True)
+
+        if not _TG_OK:
+            ctk.CTkLabel(body, text="Falta llamastation_telegram.py en la carpeta del programa.",
+                         font=ctk.CTkFont("Consolas", 12), text_color=C["red"]
+                         ).pack(anchor="w", padx=20, pady=20)
+            return f
+
+        card = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=10)
+        card.pack(fill="x", padx=20, pady=(16, 10))
+
+        ctk.CTkLabel(card, text="Bot Token",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=16, pady=(14, 2))
+        self.tg_token_var = tk.StringVar(value=self.settings.get("telegram_token", ""))
+        ctk.CTkEntry(card, textvariable=self.tg_token_var, show="•",
+                     font=ctk.CTkFont("Consolas", 12), height=36, corner_radius=8,
+                     placeholder_text="1234567890:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                     ).pack(fill="x", padx=16, pady=(0, 10))
+
+        ctk.CTkLabel(card, text="Chat IDs permitidos (separados por coma, vacío = cualquiera)",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=16, pady=(0, 2))
+        self.tg_whitelist_var = tk.StringVar(value=self.settings.get("telegram_chat_ids", ""))
+        ctk.CTkEntry(card, textvariable=self.tg_whitelist_var,
+                     font=ctk.CTkFont("Consolas", 12), height=36, corner_radius=8,
+                     placeholder_text="123456789, 987654321"
+                     ).pack(fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(card,
+                     text="Tip: habla con @userinfobot en Telegram para saber tu chat_id.\n"
+                          "Deja el campo vacío solo si el bot es privado (nadie más tiene el token).",
+                     font=ctk.CTkFont("Consolas", 10), text_color=C["dim"], justify="left"
+                     ).pack(anchor="w", padx=16, pady=(0, 4))
+
+        self.tg_web_var = tk.BooleanVar(value=self.settings.get("telegram_web_enabled", False))
+        ctk.CTkCheckBox(card, text="Permitir búsqueda web (web_search / fetch_url, igual que en el chat)",
+                         variable=self.tg_web_var,
+                         font=ctk.CTkFont("Consolas", 11),
+                         command=self._tg_toggle_web
+                         ).pack(anchor="w", padx=16, pady=(4, 6))
+
+        self.tg_autostart_var = tk.BooleanVar(value=self.settings.get("telegram_autostart", False))
+        ctk.CTkCheckBox(card, text="Iniciar el bot automáticamente al abrir LlamaStation",
+                         variable=self.tg_autostart_var,
+                         font=ctk.CTkFont("Consolas", 11),
+                         command=self._tg_toggle_autostart
+                         ).pack(anchor="w", padx=16, pady=(0, 14))
+
+        btn_row = ctk.CTkFrame(body, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(0, 10))
+        self.tg_btn_start = ctk.CTkButton(btn_row, text="▶  Iniciar bot",
+                                           fg_color=C["accent"], hover_color="#6457e0",
+                                           font=ctk.CTkFont("Consolas", 12, "bold"),
+                                           height=38, command=self._tg_start)
+        self.tg_btn_start.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.tg_btn_stop = ctk.CTkButton(btn_row, text="■  Detener bot",
+                                          fg_color="#3a1a1a", hover_color="#5a2020",
+                                          text_color=C["red"], font=ctk.CTkFont("Consolas", 12),
+                                          height=38, state="disabled", command=self._tg_stop)
+        self.tg_btn_stop.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        cmd_card = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=10)
+        cmd_card.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(cmd_card, text="Comandos del bot",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=16, pady=(14, 6))
+        _cmds = [
+            ("/new",       "borra el historial y empieza conversación nueva"),
+            ("/stop",      "corta la generación en curso"),
+            ("/status",    "estado del servidor y modelo cargado"),
+            ("/model",     "nombre del modelo actual"),
+            ("/system <t>", "fija un system prompt solo para este chat"),
+            ("/system clear", "vuelve al system prompt del perfil"),
+            ("/web on|off", "activa/desactiva la búsqueda web para este chat"),
+            ("/restart",   "reinicia el servidor llama-server"),
+            ("/help",      "muestra esta lista dentro de Telegram"),
+        ]
+        for name, desc in _cmds:
+            row = ctk.CTkFrame(cmd_card, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=1)
+            ctk.CTkLabel(row, text=name, width=110, anchor="w",
+                         font=ctk.CTkFont("Consolas", 11, "bold"),
+                         text_color=C["accent2"]).pack(side="left")
+            ctk.CTkLabel(row, text=desc, anchor="w",
+                         font=ctk.CTkFont("Consolas", 11),
+                         text_color=C["text"]).pack(side="left", fill="x", expand=True)
+        ctk.CTkFrame(cmd_card, height=8, fg_color="transparent").pack()
+
+        ctk.CTkLabel(body, text="Actividad",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=20, pady=(6, 2))
+        self.tg_log_box = ctk.CTkTextbox(body, fg_color=C["panel"], text_color="#a8ff78",
+                                          font=ctk.CTkFont("Consolas", 11), wrap="word",
+                                          state="disabled", corner_radius=8, height=220)
+        self.tg_log_box.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        return f
+
+    def _tg_log(self, t):
+        ts = datetime.now().strftime("%H:%M:%S")
+        def _do():
+            self.tg_log_box.configure(state="normal")
+            self.tg_log_box.insert("end", f"[{ts}] {t}\n")
+            self.tg_log_box.see("end")
+            self.tg_log_box.configure(state="disabled")
+        try:
+            self.after(0, _do)
+        except Exception:
+            pass
+
+    def _tg_get_server_info(self):
+        host = self.settings.get("host", "127.0.0.1")
+        port = self.settings.get("port", "8080")
+        return host, port, bool(self.server_running)
+
+    def _tg_get_system_prompt(self):
+        return (self.current_prof or {}).get("system_prompt", "")
+
+    def _tg_get_gen_params(self):
+        p = self.current_prof or {}
+        try:
+            max_tok = int(p.get("max_tokens", 1024))
+        except Exception:
+            max_tok = 1024
+        return {
+            "temperature":    float(p.get("temperature", 0.7)),
+            "top_k":          int(p.get("top_k", 40)),
+            "top_p":          float(p.get("top_p", 0.95)),
+            "min_p":          float(p.get("min_p", 0.05)),
+            "repeat_penalty": float(p.get("repeat_penalty", 1.1)),
+            "max_tokens":     max_tok if max_tok > 0 else -1,
+        }
+
+    def _tg_get_model_name(self):
+        if self.current_model:
+            return os.path.basename(self.current_model)
+        return "sin modelo cargado"
+
+    def _tg_get_thinking_params(self):
+        """Refleja el toggle de 'pensamiento' del chat principal (misma checkbox),
+        para que Telegram nunca muestre el thinking si ahí está desactivado."""
+        en = bool(getattr(self, "enable_thinking_var", None) and self.enable_thinking_var.get())
+        budget = None
+        if en:
+            try:
+                budget = self.reasoning_budget_var.get()
+            except Exception:
+                budget = None
+        return {
+            "enable_thinking": en,
+            "thinking_budget": budget,
+            "reasoning_control": en and bool(getattr(self, "_reasoning_control_supported", False)),
+        }
+
+    def _tg_toggle_web(self):
+        self.settings["telegram_web_enabled"] = bool(self.tg_web_var.get())
+        save_settings(self.settings)
+
+    def _tg_toggle_autostart(self):
+        self.settings["telegram_autostart"] = bool(self.tg_autostart_var.get())
+        save_settings(self.settings)
+
+    def _tg_autostart_check(self):
+        """Llamado al arrancar la app (y tras cambiar idioma/tema, que reconstruyen
+        la UI): si el checkbox de autoinicio está marcado y ya tenemos token guardado,
+        arranca el bot de Telegram solo. Si el bridge ya estaba corriendo (por un
+        rebuild de UI, no un arranque real de la app), solo resincroniza los botones
+        en vez de lanzar un segundo hilo."""
+        if not _TG_OK or not hasattr(self, "tg_autostart_var"):
+            return
+        if self.tg_bridge is not None:
+            # Ya había un bridge corriendo de antes (rebuild de UI) -> solo refleja el estado
+            self.tg_btn_start.configure(state="disabled")
+            self.tg_btn_stop.configure(state="normal")
+            self.tg_status_dot.configure(text_color=C["green"])
+            self.tg_status_label.configure(text="Bot activo")
+            return
+        if self.tg_autostart_var.get() and self.tg_token_var.get().strip():
+            self._tg_start()
+
+    def _tg_get_web_enabled(self):
+        return bool(getattr(self, "tg_web_var", None) and self.tg_web_var.get())
+
+    def _tg_run_web_tool(self, name, args):
+        """Ejecuta web_search / fetch_url reusando las mismas funciones que usa
+        el chat principal (DuckDuckGo). Se llama desde el hilo del bridge."""
+        if name == "web_search":
+            return self._web_search(args.get("query", ""))
+        if name == "fetch_url":
+            return self._fetch_url(args.get("url", ""))
+        return f"Tool desconocida: {name}"
+
+    def _tg_restart_server(self):
+        """Llamado desde el hilo del bridge de Telegram vía /restart.
+        Se reenvía al hilo principal con self.after() porque start_server/
+        stop_server tocan widgets de tkinter y no son thread-safe."""
+        def _do():
+            self._tg_log("reiniciando servidor a petición de Telegram...")
+            was_running = self.server_running or bool(self.server_process)
+            if was_running:
+                self.stop_server()
+                self.after(3000, self.start_server)
+            else:
+                self.start_server()
+        self.after(0, _do)
+
+    def _tg_start(self):
+        if not _TG_OK:
+            messagebox.showerror("Telegram", "Falta el archivo llamastation_telegram.py")
+            return
+        token = self.tg_token_var.get().strip()
+        if not token:
+            messagebox.showwarning("Telegram", "Pon el token del bot primero.")
+            return
+        chat_ids = [c.strip() for c in self.tg_whitelist_var.get().split(",") if c.strip()]
+
+        # Guardar en settings
+        self.settings["telegram_token"] = token
+        self.settings["telegram_chat_ids"] = self.tg_whitelist_var.get().strip()
+        save_settings(self.settings)
+
+        self.tg_bridge = TelegramBridge(
+            token=token,
+            allowed_chat_ids=chat_ids,
+            get_server_info=self._tg_get_server_info,
+            get_system_prompt=self._tg_get_system_prompt,
+            get_gen_params=self._tg_get_gen_params,
+            get_model_name=self._tg_get_model_name,
+            restart_server_fn=self._tg_restart_server,
+            get_thinking_params=self._tg_get_thinking_params,
+            web_enabled_fn=self._tg_get_web_enabled,
+            run_web_tool_fn=self._tg_run_web_tool,
+            log_fn=self._tg_log,
+        )
+        self.tg_bridge.start()
+
+        self.tg_btn_start.configure(state="disabled")
+        self.tg_btn_stop.configure(state="normal")
+        self.tg_status_dot.configure(text_color=C["green"])
+        self.tg_status_label.configure(text="Bot activo")
+        self._tg_log("bot iniciado")
+
+    def _tg_stop(self):
+        if self.tg_bridge:
+            self.tg_bridge.stop()
+            self.tg_bridge = None
+        self.tg_btn_start.configure(state="normal")
+        self.tg_btn_stop.configure(state="disabled")
+        self.tg_status_dot.configure(text_color=C["red"])
+        self.tg_status_label.configure(text="Bot detenido")
+        self._tg_log("bot detenido")
+
     # ── Info ──────────────────────────────────────────────────────────────
 
     def _build_info(self, p):
@@ -4695,10 +5860,6 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             saved_prof = self.profiles.get(last, {})
             self.current_prof = {**DEFAULT_PROFILE, **saved_prof}
             self.model_label.configure(text=Path(last).name)
-            sp = self.current_prof.get("system_prompt", "")
-            if sp and hasattr(self, "sys_entry"):
-                self.sys_entry.delete(0, "end")
-                self.sys_entry.insert(0, sp)
             self._log(f"[{datetime.now():%H:%M:%S}] Modelo restaurado: {Path(last).name}")
         try:
             port = self.settings.get("port","8080")
@@ -4735,6 +5896,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self._current_session_id = cur_sid_backup
         self._refresh_history_list()
         self._check_server_on_start()
+        self._tg_autostart_check()
         self._detect_llama_version()
 
     def _silent_update_check(self):
@@ -4835,10 +5997,6 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
                 self.settings["last_model"] = path
                 save_settings(self.settings)
-                sp = self.current_prof.get("system_prompt", "")
-                if sp and hasattr(self, "sys_entry"):
-                    self.sys_entry.delete(0, "end")
-                    self.sys_entry.insert(0, sp)
                 self._update_headless_cmd()
 
     # ── API Docs tab ─────────────────────────────────────────────────────

@@ -68,7 +68,7 @@ Most llama.cpp frontends sacrifice control for simplicity or the other way aroun
 - **Thinking mode controls** — two independent toggles:
   - **👁 Reasoning** — show/hide the reasoning block in the chat UI
   - **🧠 Think ON / ⚡ Think OFF** — enable or disable model thinking entirely via `chat_template_kwargs`. Works for all connected clients (chat, OpenAI-compatible API, external agents). Automatically restarts the server when toggled. Compatible with TurboQuant fork.
-- Web search via DuckDuckGo (no API key needed)
+- **Web search & Deep Research** via a self-hosted SearXNG instance (multi-round research pipeline, no API key needed — see [Web Search Setup](#-web-search-setup-searxng) below)
 - Vision support — attach images to chat (multimodal models)
 - File attachment — send code files directly to the model
 
@@ -203,6 +203,71 @@ LlamaStation has first-class multi-GPU support. In the model load dialog:
 - **Split Mode**: `layer` (recommended) splits the model evenly across GPUs by layers
 - **Tensor Split**: set a ratio like `1,1` for 50/50 or `3,1` for 75/25
 - Watch the **VRAM meter** in real time to verify the split is working
+
+---
+
+## 🔍 Web Search Setup (SearXNG)
+
+LlamaStation's **Web search** and **🔬 Deep Research** modes query a self-hosted [SearXNG](https://github.com/searxng/searxng) instance instead of relying on a third-party API. This keeps search fully local/private and avoids API keys or rate limits. You need a running SearXNG container with **JSON output enabled** before these features will work.
+
+### 1. Run SearXNG with Docker
+
+```bash
+docker run -d \
+  --name searxng \
+  -p 8888:8080 \
+  -v "${PWD}/searxng:/etc/searxng" \
+  --restart unless-stopped \
+  searxng/searxng:latest
+```
+
+Or with `docker-compose`:
+
+```yaml
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    restart: unless-stopped
+```
+
+### 2. Enable JSON format
+
+By default SearXNG only serves HTML. LlamaStation needs the JSON API, so edit the generated `searxng/settings.yml` (created after the first run) and make sure `json` is listed under `search.formats`:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+Restart the container after saving:
+
+```bash
+docker restart searxng
+```
+
+### 3. Point LlamaStation to your instance
+
+In the **Server** tab, set the **SearXNG URL** field to `http://localhost:8888` (default). If SearXNG is running on another machine or a different port, update the URL accordingly. Once set, both the **🔬 Deep** toggle in chat and the regular web search button will use it automatically.
+
+> 💡 Deep Research mode runs multiple rounds of SearXNG queries (reformulating the search based on prior results) before summarizing, so expect it to take noticeably longer than a single web search.
+
+### 4. Telegram bot integration
+
+The Telegram bridge (`llamastation_telegram.py`) reuses the same SearXNG instance for web search inside chats, so no separate setup is needed — just make sure SearXNG is running before starting the bot.
+
+- Set the same `SEARXNG_URL` (default `http://localhost:8888`) in the bot's config so it can reach the container.
+- Web search is triggered automatically when the model decides a query needs current information, or manually via the bot's search command.
+- If SearXNG is unreachable, the bot falls back to DuckDuckGo so search still works, just without the SearXNG-specific features (JSON parsing, multi-round research).
+- Run the bot on the same host/network as the SearXNG container (or make sure the port is reachable) — if you're using Docker networks, use the container name (e.g. `http://searxng:8080`) instead of `localhost`.
 
 ---
 

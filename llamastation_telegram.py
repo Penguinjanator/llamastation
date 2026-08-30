@@ -78,12 +78,15 @@ class TelegramBridge(threading.Thread):
         restart_server_fn()-> callable sin argumentos, opcional, reinicia el llama-server
         log_fn(str)        -> callback para volcar logs a la GUI
         history_limit      : nº de mensajes (user+assistant) que se guardan por chat
+        on_tokens(in, out) -> callback opcional, se llama tras cada respuesta completa
+                               con los tokens de prompt/generados de esa conversación
+                               (se cuentan como uso de "app", igual que el chat principal)
     """
 
     def __init__(self, token, allowed_chat_ids, get_server_info, get_system_prompt,
                  get_gen_params=None, get_model_name=None, restart_server_fn=None,
                  get_thinking_params=None, web_enabled_fn=None, run_web_tool_fn=None,
-                 log_fn=None, history_limit=20):
+                 log_fn=None, history_limit=20, on_tokens=None):
         super().__init__(daemon=True)
         self.token = (token or "").strip()
         self.allowed = {str(c).strip() for c in allowed_chat_ids if str(c).strip()}
@@ -97,6 +100,7 @@ class TelegramBridge(threading.Thread):
         self.run_web_tool_fn = run_web_tool_fn  # (name, args_dict) -> str
         self.log_fn = log_fn or (lambda s: None)
         self.history_limit = history_limit
+        self.on_tokens = on_tokens  # callback(input_tokens, output_tokens)
 
         self._stop_evt = threading.Event()
         self._offset = 0
@@ -395,6 +399,7 @@ class TelegramBridge(threading.Thread):
 
         in_think = False
         in_channel = False
+        _tg_tok_in, _tg_tok_out = 0, 0  # tokens acumulados de toda la conversación (todas las rondas)
 
         try:
             for round_i in range(max_tool_rounds + 1):
@@ -406,6 +411,7 @@ class TelegramBridge(threading.Thread):
                 tool_calls_acc = {}
                 finish_reason = None
                 round_stopped = False
+                _rt_in, _rt_out = 0, 0  # tokens de ESTA ronda (una petición POST)
 
                 resp = requests.post(f"http://{host}:{port}/v1/chat/completions",
                                       json=_base_payload(current_messages), stream=True, timeout=180)
@@ -424,6 +430,14 @@ class TelegramBridge(threading.Thread):
                         break
                     try:
                         chunk = json.loads(d)
+                        # Capturar tokens de los chunks 'timings'/'usage' de llama-server
+                        # (igual que el chat principal y el proxy Anthropic)
+                        if "timings" in chunk:
+                            _rt_in  = chunk["timings"].get("prompt_n", _rt_in)
+                            _rt_out = chunk["timings"].get("predicted_n", _rt_out)
+                        elif chunk.get("usage"):
+                            _rt_in  = chunk["usage"].get("prompt_tokens", _rt_in)
+                            _rt_out = chunk["usage"].get("completion_tokens", _rt_out)
                         choice = chunk["choices"][0]
                         delta_obj = choice.get("delta", {})
                         delta = delta_obj.get("content", "") or ""
@@ -508,6 +522,9 @@ class TelegramBridge(threading.Thread):
                         self._call("editMessageText", chat_id=chat_id, message_id=tg_msg_id,
                                     text=(full[-MAX_TG_CHARS:] + " ▌"))
 
+                _tg_tok_in  += _rt_in
+                _tg_tok_out += _rt_out
+
                 if round_stopped:
                     break
 
@@ -552,6 +569,12 @@ class TelegramBridge(threading.Thread):
             full = full or f"Error al generar respuesta: {e}"
         finally:
             self._active.pop(chat_id, None)
+
+        if self.on_tokens and (_tg_tok_in > 0 or _tg_tok_out > 0):
+            try:
+                self.on_tokens(_tg_tok_in, _tg_tok_out)
+            except Exception:
+                pass
 
         full = full.strip()
         if not full:

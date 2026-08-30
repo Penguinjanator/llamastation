@@ -31,7 +31,7 @@ def _setup_dnd(widget, callback):
     except Exception:
         pass
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from llamastation_i18n import T, set_lang, get_lang
 try:
     from llamastation_voice import VoiceMixin
@@ -124,6 +124,7 @@ C = dict(THEMES["dark"])
 
 PROFILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_profiles.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_settings.json")
+TOKENS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llamastation_tokens.json")
 
 APP_VERSION = "v0.9"
 
@@ -148,6 +149,7 @@ BACKENDS = {
     "🚀 MTP  (llama.cpp + PR#22673)": r"C:\llama-mtp\llama-server.exe",
     "🐝 BeeLlama  (DFlash + TurboQuant)": r"C:\llama-bee\llama-server.exe",
     "⚛️ AtomicChat  (TurboQuant + MTP)": r"C:\llama-atomic\llama-server.exe",
+    "🌿 Bonsai Ternary  (PrismML)": r"C:\llama-bonsai\build\bin\Release\llama-server.exe",
 }
 
 
@@ -184,6 +186,39 @@ def load_settings():
 
 def save_settings(d):
     with open(SETTINGS_FILE, "w") as f: json.dump(d, f, indent=2)
+
+def load_token_stats():
+    """Carga el histórico de tokens, separado por origen:
+    {'YYYY-MM-DD': {'app': {'in': N, 'out': N}, 'api': {'in': N, 'out': N}}, ...}
+    'app'  = tokens generados por el propio LlamaStation (chat interno + bot de Telegram)
+    'api'  = tokens extraídos vía el proxy Anthropic-compatible (Claude Code u otros
+             clientes externos apuntando a localhost:puerto+1)
+
+    Migra automáticamente el formato antiguo ({'in': N, 'out': N} plano, sin separar
+    origen) metiendo esos totales históricos en 'app', ya que no se puede reconstruir
+    a posteriori qué parte venía de la API.
+    """
+    if os.path.isfile(TOKENS_FILE):
+        try:
+            with open(TOKENS_FILE) as f: data = json.load(f)
+        except Exception: return {}
+        migrated = False
+        for day_key, v in list(data.items()):
+            if isinstance(v, dict) and ("app" in v or "api" in v):
+                continue  # ya en formato nuevo
+            din  = int(v.get("in", 0))  if isinstance(v, dict) else 0
+            dout = int(v.get("out", 0)) if isinstance(v, dict) else 0
+            data[day_key] = {"app": {"in": din, "out": dout}, "api": {"in": 0, "out": 0}}
+            migrated = True
+        if migrated:
+            save_token_stats(data)
+        return data
+    return {}
+
+def save_token_stats(d):
+    try:
+        with open(TOKENS_FILE, "w") as f: json.dump(d, f, indent=2)
+    except Exception: pass
 
 def apply_theme(name):
     """Actualiza el dict global C y el modo de apariencia de customtkinter."""
@@ -1064,6 +1099,16 @@ def _extract_version_label(raw_output):
         return f"build {n}"
     return "versión desconocida"
 
+def _model_supports_effort_levels(model_path):
+    """Detecta si el modelo cargado usa el sistema de reasoning_effort de Qwen3.8
+    (xhigh/medium/low) en vez del enable_thinking+thinking_budget clasico de
+    Qwen3.5/3.6. Deteccion por nombre de archivo, sin depender de metadata GGUF."""
+    if not model_path:
+        return False
+    name = Path(model_path).name.lower()
+    return "qwen3.8" in name or "qwen3-8" in name or "qwen38" in name
+
+
 def _detect_cuda_version():
     """Devuelve (major_minor, major) como strings, o ('12.4', '12') si no detecta."""
     try:
@@ -1798,11 +1843,12 @@ class AnthropicProxyServer:
     Puerto: llama-server port + 1 (ej: 8080 → proxy en 8081)
     """
 
-    def __init__(self, openai_base_url: str, proxy_port: int):
+    def __init__(self, openai_base_url: str, proxy_port: int, on_tokens=None):
         self.openai_base_url = openai_base_url.rstrip("/")
         self.proxy_port      = proxy_port
         self._server         = None
         self._thread         = None
+        self.on_tokens       = on_tokens  # callback(input_tokens, output_tokens)
 
     # ── Conversión de formatos ──────────────────────────────────────────
 
@@ -1970,18 +2016,33 @@ class AnthropicProxyServer:
                     block_start = json.dumps({"type": "content_block_start", "index": 0,
                                               "content_block": {"type": "text", "text": ""}})
                     self.wfile.write(f"event: content_block_start\ndata: {block_start}\n\n".encode())
+                    _px_in, _px_out = 0, 0
                     try:
                         for line in resp.iter_lines():
                             if line:
-                                converted = proxy._stream_openai_to_anthropic(
-                                    line.decode() if isinstance(line, bytes) else line,
-                                    model
-                                )
+                                _raw = line.decode() if isinstance(line, bytes) else line
+                                # Capturar tokens de los chunks 'timings'/'usage' de llama-server
+                                try:
+                                    if _raw.startswith("data: "):
+                                        _d = _raw[6:].strip()
+                                        if _d and _d != "[DONE]":
+                                            _c = json.loads(_d)
+                                            if "timings" in _c:
+                                                _px_in  = _c["timings"].get("prompt_n", _px_in)
+                                                _px_out = _c["timings"].get("predicted_n", _px_out)
+                                            elif _c.get("usage"):
+                                                _px_in  = _c["usage"].get("prompt_tokens", _px_in)
+                                                _px_out = _c["usage"].get("completion_tokens", _px_out)
+                                except Exception:
+                                    pass
+                                converted = proxy._stream_openai_to_anthropic(_raw, model)
                                 if converted:
                                     self.wfile.write(converted.encode())
                                     self.wfile.flush()
                     except Exception:
                         pass
+                    if proxy.on_tokens:
+                        proxy.on_tokens(_px_in, _px_out)
                     block_stop = json.dumps({"type": "content_block_stop", "index": 0})
                     self.wfile.write(f"event: content_block_stop\ndata: {block_stop}\n\n".encode())
                     msg_delta = json.dumps({"type": "message_delta",
@@ -1994,6 +2055,10 @@ class AnthropicProxyServer:
                         oai_resp  = resp.json()
                         ant_resp  = proxy._openai_to_anthropic(oai_resp, model)
                         self._send_json(200, ant_resp)
+                        if proxy.on_tokens:
+                            _usage = oai_resp.get("usage", {}) or {}
+                            proxy.on_tokens(_usage.get("prompt_tokens", 0),
+                                             _usage.get("completion_tokens", 0))
                     except Exception as e:
                         self._send_json(502, {"error": str(e)})
 
@@ -2024,6 +2089,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     def __init__(self):
         self.profiles         = load_profiles()
         self.settings         = load_settings()
+        self.token_stats      = load_token_stats()   # histórico de tokens leídos/generados
         # Aplicar tema e idioma guardados ANTES de construir la UI
         apply_theme(self.settings.get("theme", "dark"))
         set_lang(self.settings.get("lang", "es"))
@@ -2085,6 +2151,36 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.after(120, self._show_ready)
         # Bind al evento de restaurar desde minimizado
         self.bind("<Map>", self._on_map)
+
+    # ── Contador de tokens acumulados (día/mes/año) ─────────────────────────
+
+    def _record_tokens(self, input_tokens=0, output_tokens=0, source="app"):
+        """Acumula tokens leídos (input) y generados (output), agrupados por día
+        y por origen:
+          - source="app" → chat principal de LlamaStation y bot de Telegram
+          - source="api" → proxy Anthropic-compatible (Claude Code / clientes
+            externos apuntando a localhost:puerto+1)
+        """
+        try:
+            input_tokens  = int(input_tokens or 0)
+            output_tokens = int(output_tokens or 0)
+        except Exception:
+            return
+        if input_tokens <= 0 and output_tokens <= 0:
+            return
+        if source not in ("app", "api"):
+            source = "app"
+        today = datetime.now().strftime("%Y-%m-%d")
+        day = self.token_stats.setdefault(today, {"app": {"in": 0, "out": 0}, "api": {"in": 0, "out": 0}})
+        bucket = day.setdefault(source, {"in": 0, "out": 0})
+        bucket["in"]  += input_tokens
+        bucket["out"] += output_tokens
+        save_token_stats(self.token_stats)
+        if getattr(self, "_stats_view_active", False):
+            try:
+                self.after(0, self._refresh_stats_view)
+            except Exception:
+                pass
 
     # ── Layout ────────────────────────────────────────────────────────────
 
@@ -2507,12 +2603,19 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             ("📡", "nav_api",      self._show_api_docs),
             ("🎤", "nav_voice",    self._show_voice),
             ("📨", "nav_telegram", self._show_telegram),
+            ("📊", "nav_stats",    self._show_stats),
             ("⚖️", "nav_about",   self._show_about),
         ]:
+            _stats_label = "Estadísticas" if self.settings.get("lang", "es") == "es" else "Statistics"
             try:
-                _label = T(label_key) if label_key != "nav_telegram" else _tg_label
+                if label_key == "nav_telegram":
+                    _label = _tg_label
+                elif label_key == "nav_stats":
+                    _label = _stats_label
+                else:
+                    _label = T(label_key)
             except Exception:
-                _label = _tg_label if label_key == "nav_telegram" else label_key
+                _label = {"nav_telegram": _tg_label, "nav_stats": _stats_label}.get(label_key, label_key)
             b = ctk.CTkButton(sb, text=f"  {icon}  {_label}",
                                fg_color="transparent", hover_color=C["card"],
                                text_color=C["sub"], font=ctk.CTkFont("Consolas", 13),
@@ -2587,6 +2690,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             "API Docs":    self._build_api_docs(self.main),
             "Voz":         self._build_voice(self.main) if _VOICE_OK else ctk.CTkFrame(self.main),
             "Telegram":    self._build_telegram(self.main),
+            "Estadísticas": self._build_stats(self.main),
             "Acerca de":   self._build_about(self.main),
         }
         self._show_chat()
@@ -2594,11 +2698,15 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     def _show_frame(self, name):
         for f in self.frames.values(): f.pack_forget()
         self.frames[name].pack(fill="both", expand=True)
+        self._stats_view_active = (name == "Estadísticas")
+        if self._stats_view_active:
+            self._refresh_stats_view()
         # nav_btns ahora usa label_key como clave
         key_map = {
             "Chat": "nav_chat", "Servidor": "nav_server", "Logs": "nav_logs",
             "Info modelo": "nav_info", "Descargar": "nav_download", "API Docs": "nav_api",
-            "Voz": "nav_voice", "Telegram": "nav_telegram", "Acerca de": "nav_about",
+            "Voz": "nav_voice", "Telegram": "nav_telegram", "Estadísticas": "nav_stats",
+            "Acerca de": "nav_about",
         }
         active_key = key_map.get(name, name)
         for k, b in self.nav_btns.items():
@@ -2645,6 +2753,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     def _show_info(self):   self._show_frame("Info modelo"); self._refresh_info()
     def _show_voice(self):  self._show_frame("Voz")
     def _show_telegram(self): self._show_frame("Telegram")
+    def _show_stats(self):    self._show_frame("Estadísticas")
 
     # ── Modal de modelo ───────────────────────────────────────────────────
 
@@ -2663,6 +2772,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
             self.settings["last_model"] = path
             save_settings(self.settings)
+            self._refresh_effort_ui()
 
     # ── Chat ──────────────────────────────────────────────────────────────
 
@@ -2726,6 +2836,31 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         )
         self.btn_enable_thinking.pack(side="right", padx=(0, 4), pady=10)
 
+        # Selector de reasoning_effort (Qwen3.8: xhigh/medium/low/off) — solo
+        # visible cuando el modelo cargado se detecta como Qwen3.8. Reemplaza
+        # visualmente al botón enable_thinking + slider de budget para esos
+        # modelos, sin tocar la lógica de los demás.
+        _effort = self.settings.get("reasoning_effort", "xhigh")
+        self.reasoning_effort_var = tk.StringVar(value=_effort)
+        self.effort_frame = ctk.CTkFrame(hdr, fg_color="transparent")
+        ctk.CTkLabel(self.effort_frame, text="Effort:",
+                     font=ctk.CTkFont("Consolas", 10),
+                     text_color=C["sub"]).pack(side="left", padx=(0, 4))
+        self.seg_effort = ctk.CTkSegmentedButton(
+            self.effort_frame,
+            values=["xhigh", "medium", "low", "off"],
+            command=self._on_effort_change,
+            width=200, height=28,
+            font=ctk.CTkFont("Consolas", 10, "bold"),
+        )
+        self.seg_effort.set(_effort)
+        self.seg_effort.pack(side="left")
+        self.effort_frame.pack(side="right", padx=(0, 4), pady=10)
+        # Solo se muestra si el modelo actual soporta niveles de esfuerzo;
+        # se re-evalúa también al cargar/cambiar de modelo (ver _refresh_effort_ui).
+        if not _model_supports_effort_levels(getattr(self, "current_model", "")):
+            self.effort_frame.pack_forget()
+
         # Reasoning budget slider (visible solo cuando thinking está ON)
         _budget = self.settings.get("reasoning_budget", 8000)
         self.reasoning_budget_var = tk.IntVar(value=_budget)
@@ -2748,6 +2883,11 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.reasoning_budget_slider.pack(side="left")
         # Mostrar/ocultar según estado inicial del thinking
         if not _think_en:
+            self.reasoning_budget_frame.pack_forget()
+        # Si el modelo actual usa reasoning_effort (Qwen3.8), el toggle
+        # clásico enable_thinking + budget se oculta y manda al selector Effort.
+        if _model_supports_effort_levels(getattr(self, "current_model", "")):
+            self.btn_enable_thinking.pack_forget()
             self.reasoning_budget_frame.pack_forget()
 
         # Toggle web search
@@ -2923,6 +3063,50 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # afecte a todos los clientes (chat, OpenClaw, etc.)
         if self.server_running:
             self._log(f"[{datetime.now():%H:%M:%S}] Reiniciando servidor (cambio thinking mode)...")
+            self._restart_for_thinking()
+
+    def _build_thinking_kwargs(self):
+        """Construye el dict de chat_template_kwargs correcto según el modo
+        del modelo actual: reasoning_effort (Qwen3.8) o enable_thinking+
+        thinking_budget clásico (Qwen3.5/3.6 y el resto)."""
+        if self._effort_mode_active():
+            level = self.reasoning_effort_var.get() if getattr(self, "reasoning_effort_var", None) else "xhigh"
+            if level == "off":
+                return {"enable_thinking": False}
+            return {"preserve_thinking": True, "reasoning_effort": level}
+        en = bool(self.enable_thinking_var.get())
+        if en:
+            return {"enable_thinking": True, "thinking_budget": self.reasoning_budget_var.get()}
+        return {"enable_thinking": False}
+
+    def _effort_mode_active(self):
+        """True si el modelo cargado usa reasoning_effort (Qwen3.8) en vez del
+        enable_thinking+thinking_budget clásico."""
+        return _model_supports_effort_levels(getattr(self, "current_model", ""))
+
+    def _refresh_effort_ui(self):
+        """Vuelve a evaluar qué controles mostrar tras cargar/cambiar de modelo.
+        Llamar después de actualizar self.current_model."""
+        if not hasattr(self, "effort_frame"):
+            return
+        if self._effort_mode_active():
+            self.btn_enable_thinking.pack_forget()
+            self.reasoning_budget_frame.pack_forget()
+            self.effort_frame.pack(side="right", padx=(0, 4), pady=10)
+        else:
+            self.effort_frame.pack_forget()
+            self.btn_enable_thinking.pack(side="right", padx=(0, 4), pady=10)
+            if self.enable_thinking_var.get():
+                self.reasoning_budget_frame.pack(side="right", padx=(0, 4), pady=10,
+                                                 before=self.btn_enable_thinking)
+
+    def _on_effort_change(self, value):
+        """Callback del selector de reasoning_effort (xhigh/medium/low/off)."""
+        self.reasoning_effort_var.set(value)
+        self.settings["reasoning_effort"] = value
+        save_settings(self.settings)
+        if self.server_running:
+            self._log(f"[{datetime.now():%H:%M:%S}] Reiniciando servidor (cambio reasoning_effort)...")
             self._restart_for_thinking()
 
     def _on_reasoning_budget_change(self, value):
@@ -4301,7 +4485,12 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     # siquiera a escribir el tool call — así que se lo sumamos aparte
                     # para garantizar que quede presupuesto real para la salida.
                     _fs_floor = 8192
-                    if self.enable_thinking_var.get():
+                    if self._effort_mode_active():
+                        # Sin budget explícito en modo effort; xhigh puede razonar
+                        # largo, así que damos un margen generoso por defecto.
+                        if getattr(self, "reasoning_effort_var", None) and self.reasoning_effort_var.get() != "off":
+                            _fs_floor += 8000
+                    elif self.enable_thinking_var.get():
                         _fs_floor += int(self.reasoning_budget_var.get() or 0)
                     _cfg_max_tok = max(_cfg_max_tok, _fs_floor)
                 payload = {
@@ -4315,12 +4504,14 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     "repeat_penalty": float(p.get("repeat_penalty", 1.1)),
                     "seed":           int(p.get("seed", -1)),
                     "stream": True,
-                    "chat_template_kwargs": {
-                        "enable_thinking": bool(self.enable_thinking_var.get()),
-                        **({"thinking_budget": self.reasoning_budget_var.get()} if self.enable_thinking_var.get() else {}),
-                    },
+                    "chat_template_kwargs": self._build_thinking_kwargs(),
                 }
-                if self.enable_thinking_var.get() and self._reasoning_control_supported:
+                _thinking_is_on = (
+                    self.reasoning_effort_var.get() != "off"
+                    if self._effort_mode_active() and getattr(self, "reasoning_effort_var", None)
+                    else bool(self.enable_thinking_var.get())
+                )
+                if _thinking_is_on and self._reasoning_control_supported:
                     payload["reasoning_control"] = True
                 self._current_gen_id = None  # se rellena con el primer chunk de esta ronda
                 active_tools = []
@@ -4743,6 +4934,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 n_pred   = timings.get("predicted_n", 0)
                 n_prompt = timings.get("prompt_n", 0)
                 self._session_tokens += n_pred + n_prompt
+                self._record_tokens(n_prompt, n_pred, source="app")
                 ctx_pct = min((self._session_tokens / ctx_size * 100) if ctx_size > 0 else 0, 100.0)
                 stats = (
                     f"\n\u26a1 {tps:.1f} tok/s  |  {n_pred} tokens  |  "
@@ -5062,16 +5254,26 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
         args += ["--reasoning-format", "none"]
         # Thinking mode: inyectar chat_template_kwargs para que afecte a todos los clientes
-        enable_thinking = getattr(self, "enable_thinking_var", None)
-        if enable_thinking is not None:
-            val = "true" if enable_thinking.get() else "false"
-            if enable_thinking.get():
-                _rbv = getattr(self, "reasoning_budget_var", None)
-                budget = int(_rbv.get()) if _rbv is not None else 8000
-                args += ["--chat-template-kwargs",
-                         f'{{"enable_thinking":{val},"thinking_budget":{budget}}}']
+        if self._effort_mode_active():
+            # Qwen3.8: niveles de esfuerzo (xhigh/medium/low) en vez de budget.
+            _effort = getattr(self, "reasoning_effort_var", None)
+            level = _effort.get() if _effort is not None else "xhigh"
+            if level == "off":
+                args += ["--chat-template-kwargs", '{"enable_thinking":false}']
             else:
-                args += ["--chat-template-kwargs", f'{{"enable_thinking":{val}}}']
+                args += ["--chat-template-kwargs",
+                         f'{{"preserve_thinking":true,"reasoning_effort":"{level}"}}']
+        else:
+            enable_thinking = getattr(self, "enable_thinking_var", None)
+            if enable_thinking is not None:
+                val = "true" if enable_thinking.get() else "false"
+                if enable_thinking.get():
+                    _rbv = getattr(self, "reasoning_budget_var", None)
+                    budget = int(_rbv.get()) if _rbv is not None else 8000
+                    args += ["--chat-template-kwargs",
+                             f'{{"enable_thinking":{val},"thinking_budget":{budget}}}']
+                else:
+                    args += ["--chat-template-kwargs", f'{{"enable_thinking":{val}}}']
         ex = str(p.get("extra_args","")).strip()
         if ex: args.extend(ex.split())
         # Draft Model (especulación clásica con modelo pequeño)
@@ -5296,18 +5498,14 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         return "sin modelo cargado"
 
     def _tg_get_thinking_params(self):
-        """Refleja el toggle de 'pensamiento' del chat principal (misma checkbox),
-        para que Telegram nunca muestre el thinking si ahí está desactivado."""
-        en = bool(getattr(self, "enable_thinking_var", None) and self.enable_thinking_var.get())
-        budget = None
-        if en:
-            try:
-                budget = self.reasoning_budget_var.get()
-            except Exception:
-                budget = None
+        """Refleja el toggle/selector de 'pensamiento' del chat principal,
+        para que Telegram nunca muestre el thinking si ahí está desactivado.
+        Soporta tanto el modo clásico (enable_thinking+budget) como el modo
+        de niveles de esfuerzo de Qwen3.8 (reasoning_effort)."""
+        kwargs = self._build_thinking_kwargs()
+        en = kwargs.get("enable_thinking", True)  # True si viene por reasoning_effort
         return {
-            "enable_thinking": en,
-            "thinking_budget": budget,
+            **kwargs,
             "reasoning_control": en and bool(getattr(self, "_reasoning_control_supported", False)),
         }
 
@@ -5390,6 +5588,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             web_enabled_fn=self._tg_get_web_enabled,
             run_web_tool_fn=self._tg_run_web_tool,
             log_fn=self._tg_log,
+            on_tokens=lambda i, o: self._record_tokens(i, o, source="app"),
         )
         self.tg_bridge.start()
 
@@ -5664,10 +5863,56 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         threading.Thread(target=self._read_logs, daemon=True).start()
         threading.Thread(target=self._wait_ready, daemon=True).start()
 
+    # Detecta las líneas "prompt eval time" / "eval time" que llama-server
+    # imprime en su propia consola por CADA petición que atiende, venga de
+    # donde venga (chat interno, Telegram, proxy 8081, o un cliente externo
+    # como Pi/Hermes hablando directo al puerto 8080). Sirve para calcular
+    # el total REAL procesado por el servidor y, por diferencia con lo que
+    # 'app'+'api' ya contabilizan por su cuenta, sacar el tráfico "directo"
+    # que no pasa por ningún camino instrumentado por LlamaStation.
+    _RE_PROMPT_EVAL_TOKENS = re.compile(r"prompt eval time\s*=.*?/\s*(\d+)\s*tokens")
+    _RE_EVAL_TOKENS        = re.compile(r"^eval time\s*=.*?/\s*(\d+)\s*tokens")
+
+    def _parse_server_console_tokens(self, line):
+        stripped = line.strip()
+        m = self._RE_PROMPT_EVAL_TOKENS.search(stripped)
+        if m:
+            self._pending_console_prompt_n = int(m.group(1))
+            return
+        m = self._RE_EVAL_TOKENS.match(stripped)
+        if m and getattr(self, "_pending_console_prompt_n", None) is not None:
+            eval_n = int(m.group(1))
+            self._record_console_tokens(self._pending_console_prompt_n, eval_n)
+            self._pending_console_prompt_n = None
+
+    def _record_console_tokens(self, prompt_n, eval_n):
+        """Acumula el total real procesado por llama-server (todas las fuentes
+        combinadas), leído directamente de su log de consola."""
+        try:
+            prompt_n = int(prompt_n or 0)
+            eval_n   = int(eval_n or 0)
+        except Exception:
+            return
+        if prompt_n <= 0 and eval_n <= 0:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        day = self.token_stats.setdefault(
+            today, {"app": {"in": 0, "out": 0}, "api": {"in": 0, "out": 0}})
+        bucket = day.setdefault("server_total", {"in": 0, "out": 0})
+        bucket["in"]  += prompt_n
+        bucket["out"] += eval_n
+        save_token_stats(self.token_stats)
+        if getattr(self, "_stats_view_active", False):
+            try:
+                self.after(0, self._refresh_stats_view)
+            except Exception:
+                pass
+
     def _read_logs(self):
         """Lee stdout linea a linea. Para limpiamente cuando stop_server()
         setea _log_stop y cierra/mata el proceso."""
         self._last_log_lines = []
+        self._pending_console_prompt_n = None
         proc = self._log_proc   # referencia local al proceso activo
         try:
             while True:
@@ -5680,6 +5925,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self._last_log_lines.append(l)
                 if len(self._last_log_lines) > 30:
                     self._last_log_lines.pop(0)
+                self._parse_server_console_tokens(l)
                 self.after(0, lambda x=l: self._log(x))
         except Exception:
             pass
@@ -5721,7 +5967,10 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         openai_url = f"http://127.0.0.1:{port}"
         if self._proxy_server:
             self._proxy_server.stop()
-        self._proxy_server = AnthropicProxyServer(openai_url, proxy_port)
+        self._proxy_server = AnthropicProxyServer(
+            openai_url, proxy_port,
+            on_tokens=lambda i, o: self._record_tokens(i, o, source="api")
+        )
         if self._proxy_server.start():
             self._log(f"[{datetime.now():%H:%M:%S}] ✓ Anthropic proxy :{proxy_port} (/v1/messages)")
         else:
@@ -5861,6 +6110,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             self.current_prof = {**DEFAULT_PROFILE, **saved_prof}
             self.model_label.configure(text=Path(last).name)
             self._log(f"[{datetime.now():%H:%M:%S}] Modelo restaurado: {Path(last).name}")
+            self._refresh_effort_ui()
         try:
             port = self.settings.get("port","8080")
             if requests.get(f"http://127.0.0.1:{port}/health",timeout=1).status_code==200:
@@ -5998,6 +6248,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self.settings["last_model"] = path
                 save_settings(self.settings)
                 self._update_headless_cmd()
+                self._refresh_effort_ui()
 
     # ── API Docs tab ─────────────────────────────────────────────────────
 
@@ -6298,6 +6549,335 @@ print(message.content[0].text)"""
 
     def _show_about(self):
         self._show_frame("Acerca de")
+
+    # ── Estadísticas de tokens ───────────────────────────────────────────
+
+    def _build_stats(self, parent):
+        f = ctk.CTkFrame(parent, fg_color=C["bg"], corner_radius=0)
+
+        hdr = ctk.CTkFrame(f, fg_color=C["panel"], corner_radius=0, height=56)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="📊  Estadísticas de tokens",
+                     font=ctk.CTkFont("Consolas", 15, "bold"),
+                     text_color=C["accent2"]).pack(side="left", padx=20, pady=14)
+
+        # Leyenda de colores App / API / Directo
+        leg = ctk.CTkFrame(hdr, fg_color="transparent")
+        leg.pack(side="right", padx=20)
+        for color_key, label in ((self._STATS_COLOR_APP, "App (chat + Telegram)"),
+                                  (self._STATS_COLOR_API, "API (proxy 8081)"),
+                                  (self._STATS_COLOR_DIRECT, "Directo (Pi, Hermes...)")):
+            dot = ctk.CTkFrame(leg, width=10, height=10, corner_radius=5, fg_color=color_key)
+            dot.pack(side="left", padx=(10, 4)); dot.pack_propagate(False)
+            ctk.CTkLabel(leg, text=label, font=ctk.CTkFont("Consolas", 10),
+                         text_color=C["sub"]).pack(side="left")
+
+        sc_outer = ctk.CTkScrollableFrame(f, fg_color=C["bg"], corner_radius=0)
+        sc_outer.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ── Tarjetas resumen (hoy / mes / año / total), separadas por origen ──
+        cards = ctk.CTkFrame(sc_outer, fg_color="transparent")
+        cards.pack(fill="x", padx=20, pady=(16, 8))
+        self._stats_cards = {}
+
+        def _stat_card(key, label):
+            c = ctk.CTkFrame(cards, fg_color=C["card"], corner_radius=8)
+            c.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            ctk.CTkLabel(c, text=label, font=ctk.CTkFont("Consolas", 9, "bold"),
+                         text_color=C["sub"]).pack(anchor="w", padx=12, pady=(10, 2))
+            lbl_app = ctk.CTkLabel(c, text="App    ↓0  ↑0", font=ctk.CTkFont("Consolas", 11),
+                                    text_color=self._STATS_COLOR_APP, anchor="w")
+            lbl_app.pack(anchor="w", padx=12, fill="x")
+            lbl_api = ctk.CTkLabel(c, text="API    ↓0  ↑0", font=ctk.CTkFont("Consolas", 11),
+                                    text_color=self._STATS_COLOR_API, anchor="w")
+            lbl_api.pack(anchor="w", padx=12, fill="x")
+            lbl_dir = ctk.CTkLabel(c, text="Dir.   ↓0  ↑0", font=ctk.CTkFont("Consolas", 11),
+                                    text_color=self._STATS_COLOR_DIRECT, anchor="w")
+            lbl_dir.pack(anchor="w", padx=12, fill="x")
+            lbl_tot = ctk.CTkLabel(c, text="Σ 0 tokens", font=ctk.CTkFont("Consolas", 10, "bold"),
+                                    text_color=C["text"])
+            lbl_tot.pack(anchor="w", padx=12, pady=(2, 10))
+            self._stats_cards[key] = (lbl_app, lbl_api, lbl_dir, lbl_tot)
+
+        _stat_card("today", "HOY")
+        _stat_card("month", "ESTE MES")
+        _stat_card("year",  "ESTE AÑO")
+        _stat_card("total", "TOTAL")
+
+        # ── Gráfica: tokens por día, últimos 14 días, App/API/Directo ────
+        ctk.CTkLabel(sc_outer, text="Últimos 14 días  (barras apiladas: App + API + Directo)",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=22, pady=(8, 2))
+        chart_frame = ctk.CTkFrame(sc_outer, fg_color=C["panel"], corner_radius=8)
+        chart_frame.pack(fill="x", padx=20, pady=(0, 12))
+        self._stats_chart = tk.Canvas(chart_frame, height=180, bg=C["panel"],
+                                       highlightthickness=0)
+        self._stats_chart.pack(fill="x", expand=True, padx=8, pady=8)
+        self._stats_chart.bind("<Configure>", lambda e: self._refresh_stats_view())
+
+        # ── Gráfica: reparto acumulado App vs API vs Directo (barra horiz.) ──
+        ctk.CTkLabel(sc_outer, text="Reparto total  App vs API vs Directo",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=22, pady=(4, 2))
+        split_frame = ctk.CTkFrame(sc_outer, fg_color=C["panel"], corner_radius=8)
+        split_frame.pack(fill="x", padx=20, pady=(0, 12))
+        self._stats_split_chart = tk.Canvas(split_frame, height=46, bg=C["panel"],
+                                             highlightthickness=0)
+        self._stats_split_chart.pack(fill="x", expand=True, padx=8, pady=8)
+        self._stats_split_chart.bind("<Configure>", lambda e: self._refresh_stats_view())
+
+        # ── Desglose por mes (tabla) ──────────────────────────────────────
+        ctk.CTkLabel(sc_outer, text="Por mes  (↓ entrada · ↑ salida)",
+                     font=ctk.CTkFont("Consolas", 11, "bold"), text_color=C["sub"]
+                     ).pack(anchor="w", padx=22, pady=(8, 2))
+
+        self._stats_scroll = ctk.CTkFrame(sc_outer, fg_color=C["panel"], corner_radius=8)
+        self._stats_scroll.pack(fill="x", padx=20, pady=(0, 20))
+
+        return f
+
+    # Colores fijos para distinguir origen en tarjetas/gráficas (independientes del tema)
+    _STATS_COLOR_APP    = "#7c6af7"
+    _STATS_COLOR_API    = "#fbbf24"
+    _STATS_COLOR_DIRECT = "#4ade80"
+
+    def _refresh_stats_view(self):
+        """Recalcula y repinta hoy / mes / año / total, las gráficas y el
+        desglose por mes, separando siempre tres orígenes:
+          - app    → chat interno + bot de Telegram (lo sabemos con certeza)
+          - api    → proxy Anthropic-compatible / clientes externos (8081)
+          - directo → server_total (todo lo que procesa llama-server, leído
+                      de su consola) menos app y api → clientes que hablan
+                      directo al 8080 sin pasar por ningún camino
+                      instrumentado (Pi, Hermes, curl, etc.)
+        """
+        if not hasattr(self, "_stats_cards"):
+            return
+        stats = self.token_stats or {}
+        now = datetime.now()
+        today_key = now.strftime("%Y-%m-%d")
+        month_key = now.strftime("%Y-%m")
+        year_key  = now.strftime("%Y")
+
+        def _blank():
+            return {"app": [0, 0], "api": [0, 0], "server_total": [0, 0]}
+
+        totals   = {"today": _blank(), "month": _blank(), "year": _blank(), "total": _blank()}
+        by_month = {}   # {"YYYY-MM": {"app":[in,out], "api":[in,out], "server_total":[in,out]}}
+        by_day   = {}   # {"YYYY-MM-DD": idem}
+
+        for day_key, v in stats.items():
+            if not isinstance(v, dict):
+                continue
+            day_entry = _blank()
+            for src in ("app", "api", "server_total"):
+                sv = v.get(src, {}) if isinstance(v.get(src, {}), dict) else {}
+                din, dout = int(sv.get("in", 0)), int(sv.get("out", 0))
+                day_entry[src][0] += din
+                day_entry[src][1] += dout
+                totals["total"][src][0] += din; totals["total"][src][1] += dout
+                if day_key == today_key:
+                    totals["today"][src][0] += din; totals["today"][src][1] += dout
+                if day_key.startswith(month_key):
+                    totals["month"][src][0] += din; totals["month"][src][1] += dout
+                if day_key.startswith(year_key):
+                    totals["year"][src][0] += din; totals["year"][src][1] += dout
+            by_day[day_key] = day_entry
+            mk = day_key[:7]  # YYYY-MM
+            bm = by_month.setdefault(mk, _blank())
+            for src in ("app", "api", "server_total"):
+                bm[src][0] += day_entry[src][0]
+                bm[src][1] += day_entry[src][1]
+
+        def _fmt(n):
+            return f"{n:,}".replace(",", ".")
+
+        def _direct(entry):
+            """'Directo' = server_total - app - api, sin bajar de 0 (por si
+            el log de consola aún no ha llegado a capturar la última
+            petición cuando se repinta la vista)."""
+            din  = max(0, entry["server_total"][0] - entry["app"][0] - entry["api"][0])
+            dout = max(0, entry["server_total"][1] - entry["app"][1] - entry["api"][1])
+            return [din, dout]
+
+        for key, (lbl_app, lbl_api, lbl_dir, lbl_tot) in self._stats_cards.items():
+            t = totals[key]
+            app_in, app_out = t["app"]
+            api_in, api_out = t["api"]
+            dir_in, dir_out = _direct(t)
+            lbl_app.configure(text=f"App    ↓{_fmt(app_in)}  ↑{_fmt(app_out)}")
+            lbl_api.configure(text=f"API    ↓{_fmt(api_in)}  ↑{_fmt(api_out)}")
+            lbl_dir.configure(text=f"Dir.   ↓{_fmt(dir_in)}  ↑{_fmt(dir_out)}")
+            grand = app_in + app_out + api_in + api_out + dir_in + dir_out
+            lbl_tot.configure(text=f"Σ {_fmt(grand)} tokens")
+
+        self._draw_daily_chart(by_day, _direct)
+        self._draw_split_chart(totals["total"], _direct)
+        self._draw_month_table(by_month, _fmt, _direct)
+
+    def _draw_daily_chart(self, by_day, _direct):
+        """Barras apiladas (App abajo, API en medio, Directo arriba) de los
+        últimos 14 días."""
+        cv = getattr(self, "_stats_chart", None)
+        if not cv:
+            return
+        cv.delete("all")
+        w = cv.winfo_width() or 600
+        h = cv.winfo_height() or 180
+        if w < 20:
+            return
+
+        days = []
+        d = datetime.now()
+        for i in range(13, -1, -1):
+            day = (d - timedelta(days=i)).strftime("%Y-%m-%d")
+            days.append(day)
+
+        totals_per_day = []
+        max_val = 1
+        for day in days:
+            entry = by_day.get(day, {"app": [0, 0], "api": [0, 0], "server_total": [0, 0]})
+            app_tot = entry["app"][0] + entry["app"][1]
+            api_tot = entry["api"][0] + entry["api"][1]
+            dir_in, dir_out = _direct(entry)
+            dir_tot = dir_in + dir_out
+            totals_per_day.append((app_tot, api_tot, dir_tot))
+            max_val = max(max_val, app_tot + api_tot + dir_tot)
+
+        pad_top, pad_bottom, pad_x = 10, 22, 6
+        plot_h = h - pad_top - pad_bottom
+        n = len(days)
+        bar_gap = 6
+        bar_w = max(4, (w - 2 * pad_x - bar_gap * (n - 1)) / n)
+
+        if max_val <= 0:
+            cv.create_text(w / 2, h / 2, text="Sin datos todavía",
+                            fill=C["dim"], font=("Consolas", 10))
+            return
+
+        for i, (day, (app_tot, api_tot, dir_tot)) in enumerate(zip(days, totals_per_day)):
+            x0 = pad_x + i * (bar_w + bar_gap)
+            x1 = x0 + bar_w
+            app_h = (app_tot / max_val) * plot_h
+            api_h = (api_tot / max_val) * plot_h
+            dir_h = (dir_tot / max_val) * plot_h
+            y_base = pad_top + plot_h
+            if app_h > 0:
+                cv.create_rectangle(x0, y_base - app_h, x1, y_base,
+                                     fill=self._STATS_COLOR_APP, outline="")
+            if api_h > 0:
+                cv.create_rectangle(x0, y_base - app_h - api_h, x1, y_base - app_h,
+                                     fill=self._STATS_COLOR_API, outline="")
+            if dir_h > 0:
+                cv.create_rectangle(x0, y_base - app_h - api_h - dir_h, x1,
+                                     y_base - app_h - api_h,
+                                     fill=self._STATS_COLOR_DIRECT, outline="")
+            if not (app_h or api_h or dir_h):
+                cv.create_rectangle(x0, y_base - 1, x1, y_base, fill=C["dim"], outline="")
+            # Etiqueta de eje X: solo día/mes, y salteando si hay poco hueco
+            show_label = n <= 10 or i % 2 == 0
+            if show_label:
+                lbl = day[8:10] + "/" + day[5:7]
+                cv.create_text((x0 + x1) / 2, h - pad_bottom + 11, text=lbl,
+                                fill=C["sub"], font=("Consolas", 8))
+
+    def _draw_split_chart(self, total_all, _direct):
+        """Barra horizontal única mostrando el % total App vs API vs Directo
+        (histórico)."""
+        cv = getattr(self, "_stats_split_chart", None)
+        if not cv:
+            return
+        cv.delete("all")
+        w = cv.winfo_width() or 600
+        h = cv.winfo_height() or 46
+        if w < 20:
+            return
+
+        app_tot = total_all["app"][0] + total_all["app"][1]
+        api_tot = total_all["api"][0] + total_all["api"][1]
+        dir_in, dir_out = _direct(total_all)
+        dir_tot = dir_in + dir_out
+        grand = app_tot + api_tot + dir_tot
+
+        bar_h = 22
+        y0 = (h - bar_h) / 2
+        y1 = y0 + bar_h
+
+        if grand <= 0:
+            cv.create_rectangle(0, y0, w, y1, fill=C["card2"], outline="")
+            cv.create_text(w / 2, h / 2, text="Sin datos todavía",
+                            fill=C["dim"], font=("Consolas", 10))
+            return
+
+        app_w = w * (app_tot / grand)
+        api_w = w * (api_tot / grand)
+        cv.create_rectangle(0, y0, app_w, y1, fill=self._STATS_COLOR_APP, outline="")
+        cv.create_rectangle(app_w, y0, app_w + api_w, y1, fill=self._STATS_COLOR_API, outline="")
+        cv.create_rectangle(app_w + api_w, y0, w, y1, fill=self._STATS_COLOR_DIRECT, outline="")
+
+        app_pct = round(100 * app_tot / grand)
+        api_pct = round(100 * api_tot / grand)
+        dir_pct = max(0, 100 - app_pct - api_pct)
+        if app_w > 55:
+            cv.create_text(app_w / 2, h / 2, text=f"App {app_pct}%",
+                            fill="#0f0f13", font=("Consolas", 10, "bold"))
+        if api_w > 55:
+            cv.create_text(app_w + api_w / 2, h / 2, text=f"API {api_pct}%",
+                            fill="#0f0f13", font=("Consolas", 10, "bold"))
+        if (w - app_w - api_w) > 55:
+            cv.create_text(app_w + api_w + (w - app_w - api_w) / 2, h / 2,
+                            text=f"Dir. {dir_pct}%",
+                            fill="#0f0f13", font=("Consolas", 10, "bold"))
+
+    def _draw_month_table(self, by_month, _fmt, _direct):
+        """Tabla de desglose mensual, con columnas separadas App / API / Directo."""
+        for w in self._stats_scroll.winfo_children():
+            w.destroy()
+
+        if not by_month:
+            ctk.CTkLabel(self._stats_scroll, text="Todavía no hay datos registrados.",
+                         font=ctk.CTkFont("Consolas", 11), text_color=C["dim"]
+                         ).pack(anchor="w", padx=10, pady=10)
+            return
+
+        _MESES = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+                  "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+
+        # Cabecera
+        hdr = ctk.CTkFrame(self._stats_scroll, fg_color="transparent")
+        hdr.pack(fill="x", padx=8, pady=(8, 2))
+        for txt, wdt in (("Mes", 80), ("App ↓/↑", 135), ("API ↓/↑", 135),
+                          ("Directo ↓/↑", 135), ("Σ total", 100)):
+            ctk.CTkLabel(hdr, text=txt, width=wdt, anchor="w",
+                         font=ctk.CTkFont("Consolas", 9, "bold"),
+                         text_color=C["dim"]).pack(side="left", padx=4)
+
+        for mk in sorted(by_month.keys(), reverse=True):
+            entry = by_month[mk]
+            app_in, app_out = entry["app"]
+            api_in, api_out = entry["api"]
+            dir_in, dir_out = _direct(entry)
+            yr, mo = mk.split("-")
+            label = f"{_MESES[int(mo)]} {yr}"
+            grand = app_in + app_out + api_in + api_out + dir_in + dir_out
+            row = ctk.CTkFrame(self._stats_scroll, fg_color=C["card"], corner_radius=6)
+            row.pack(fill="x", padx=8, pady=3)
+            ctk.CTkLabel(row, text=label, width=80, anchor="w",
+                         font=ctk.CTkFont("Consolas", 11, "bold"),
+                         text_color=C["accent2"]).pack(side="left", padx=(8, 4), pady=8)
+            ctk.CTkLabel(row, text=f"↓{_fmt(app_in)}  ↑{_fmt(app_out)}", width=135, anchor="w",
+                         font=ctk.CTkFont("Consolas", 11),
+                         text_color=self._STATS_COLOR_APP).pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=f"↓{_fmt(api_in)}  ↑{_fmt(api_out)}", width=135, anchor="w",
+                         font=ctk.CTkFont("Consolas", 11),
+                         text_color=self._STATS_COLOR_API).pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=f"↓{_fmt(dir_in)}  ↑{_fmt(dir_out)}", width=135, anchor="w",
+                         font=ctk.CTkFont("Consolas", 11),
+                         text_color=self._STATS_COLOR_DIRECT).pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=f"{_fmt(grand)} tokens", anchor="w",
+                         font=ctk.CTkFont("Consolas", 11),
+                         text_color=C["dim"]).pack(side="left", padx=4)
+
 
     def _build_about(self, parent):
         f = ctk.CTkFrame(parent, fg_color=C["bg"], corner_radius=0)

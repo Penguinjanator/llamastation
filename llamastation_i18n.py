@@ -103,6 +103,7 @@ STRINGS = {
         "sl_batch":        "Batch Size  — tokens procesados a la vez al cargar el prompt, más = más rápido",
         "sl_ubatch":       "UBatch Size  — subdivisión del batch, debe ser igual o menor que Batch Size",
         "sl_max_tok":      "Max Tokens  — límite de tokens a generar por respuesta (-1 = ilimitado)",
+        "sl_ctx_checkpoints": "Ctx Checkpoints  — puntos de guardado del contexto (def. 32)",
         "sl_temp":         "Temperature  — creatividad: 0=determinista, 0.7=equilibrado, >1=más aleatorio",
         "sl_topk":         "Top K  — limita el muestreo a los K tokens más probables, 0=desactivado",
         "sl_topp":         "Top P  — muestreo por núcleo: usa tokens hasta acumular esta probabilidad",
@@ -137,6 +138,8 @@ STRINGS = {
         "split_tip":       "Split Mode — cómo se reparte el modelo entre GPUs. 'layer' = reparto por capas (recomendado). 'row' = por filas de tensores.",
         "tensor_tip":      "Tensor Split — proporción de VRAM por GPU (ej: '1,1' = 50/50, '3,1' = 75/25). Vacío = auto.",
         "tensor_ph":       "1,1  (dejar vacío para auto)",
+        "disable_autofit": "Desactivar auto-fit (-fit off)",
+        "disable_autofit_tip": "El servidor recalcula el reparto de capas por su cuenta para dejar margen de VRAM libre, y puede ignorar tu Tensor Split. Con esto forzado, respeta ngl/tensor-split al pie de la letra — riesgo de OOM si te pasas de VRAM.",
         "cpu_mode_tip":    "Modo: GPU (defecto), Solo CPU+RAM, Hibrido o Vulkan (AMD/Intel/NPU)",
         "cpu_tip2":        "Consejo CPU: sube Threads (sección Hardware) al número de núcleos físicos de tu CPU para máximo rendimiento.",
         "mmproj_tip":      "Archivo mmproj para modelos con vision. Se detecta automaticamente si esta en la misma carpeta que el modelo.",
@@ -144,6 +147,7 @@ STRINGS = {
         "mmproj_ph":       "Ruta al archivo mmproj-*.gguf  (opcional)",
         "mmproj_select":   "Selecciona mmproj",
         "mmproj_disable":  "Deshabilitar mmproj (ahorra VRAM, desactiva visión)",
+        "mmproj_cpu":      "Cargar mmproj en CPU/RAM en vez de VRAM (--no-mmproj-offload)",
 
         # Botones modal / browser
         "load_btn":        "Cargar  ↵",
@@ -268,11 +272,11 @@ STRINGS = {
 
         # ── MTP ──────────────────────────────────────────────────────
         "mtp_activate":    "Activar MTP",
-        "mtp_draft_n_max": "spec-draft-n-max  (tokens drafteados, rec. 6)",
         "mtp_manual_hint": (
-            "💡 Si el interruptor MTP no funciona con tu backend, desactívalo y usa "
-            "el recuadro de Argumentos Extra (arriba) para introducir los flags manualmente.\n"
-            "Ej. AtomicChat: --spec-type nextn --model-draft <ruta_modelo> --draft-max 4 -np 1"
+            "💡 Escribe aquí los flags exactos que necesite tu backend (nada viene "
+            "precargado). Solo se aplican si el interruptor MTP está activo, que "
+            "además fuerza -np 1 automáticamente.\n"
+            "Ej. AtomicChat: --spec-type nextn --draft-max 4"
         ),
     },
 
@@ -375,6 +379,7 @@ STRINGS = {
         "sl_batch":        "Batch Size  — tokens processed at once when loading prompt, more = faster",
         "sl_ubatch":       "UBatch Size  — batch subdivision, must be equal or less than Batch Size",
         "sl_max_tok":      "Max Tokens  — generation token limit per response (-1 = unlimited)",
+        "sl_ctx_checkpoints": "Ctx Checkpoints  — context-state checkpoints kept (def. 32)",
         "sl_temp":         "Temperature  — creativity: 0=deterministic, 0.7=balanced, >1=more random",
         "sl_topk":         "Top K  — limits sampling to the K most probable tokens, 0=disabled",
         "sl_topp":         "Top P  — nucleus sampling: uses tokens until this cumulative probability",
@@ -409,6 +414,8 @@ STRINGS = {
         "split_tip":       "Split Mode — how the model is split across GPUs. 'layer' = layer split (recommended). 'row' = tensor row split.",
         "tensor_tip":      "Tensor Split — VRAM ratio per GPU (e.g. '1,1' = 50/50, '3,1' = 75/25). Empty = auto.",
         "tensor_ph":       "1,1  (leave empty for auto)",
+        "disable_autofit": "Disable auto-fit (-fit off)",
+        "disable_autofit_tip": "The server recalculates the layer split on its own to leave a VRAM safety margin, and may ignore your Tensor Split. With this forced, it honors ngl/tensor-split exactly — risk of OOM if you overshoot VRAM.",
         "cpu_mode_tip":    "Mode: GPU (default), CPU+RAM only, Hybrid, or Vulkan (AMD/Intel/NPU)",
         "cpu_tip2":        "CPU tip: raise Threads (Hardware section) to your CPU's physical core count for best performance.",
         "mmproj_tip":      "mmproj file for vision models. Auto-detected if it's in the same folder as the model.",
@@ -416,6 +423,7 @@ STRINGS = {
         "mmproj_ph":       "Path to mmproj-*.gguf file  (optional)",
         "mmproj_select":   "Select mmproj",
         "mmproj_disable":  "Disable mmproj (saves VRAM, disables vision)",
+        "mmproj_cpu":      "Load mmproj on CPU/RAM instead of VRAM (--no-mmproj-offload)",
 
         # Buttons modal / browser
         "load_btn":        "Load  ↵",
@@ -540,11 +548,11 @@ STRINGS = {
 
         # ── MTP ──────────────────────────────────────────────────────
         "mtp_activate":    "Enable MTP",
-        "mtp_draft_n_max": "spec-draft-n-max  (draft tokens, rec. 6)",
         "mtp_manual_hint": (
-            "💡 If the MTP toggle doesn't work with your backend, disable it and use "
-            "the Extra Arguments box (above) to set the flags manually.\n"
-            "E.g. AtomicChat: --spec-type nextn --model-draft <model_path> --draft-max 4 -np 1"
+            "💡 Type the exact flags your backend needs here (nothing is preloaded). "
+            "They're only applied while the MTP toggle is on, which also forces -np 1 "
+            "automatically.\n"
+            "E.g. AtomicChat: --spec-type nextn --draft-max 4"
         ),
     },
 }

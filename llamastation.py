@@ -131,6 +131,7 @@ APP_VERSION = "v0.9"
 DEFAULT_PROFILE = {
     "gpu_layers": -1, "threads": 8, "threads_batch": 8,
     "ctx_size": 4096, "batch_size": 512, "ubatch_size": 512, "max_concurrent": 1,
+    "ctx_checkpoints": 32,
     "temperature": 0.7, "top_k": 40, "top_p": 0.95, "min_p": 0.05,
     "repeat_penalty": 1.1, "repeat_last_n": 64, "max_tokens": 2048, "seed": -1,
     "flash_attn": True, "mmap": False, "mlock": False, "cont_batching": True,
@@ -138,9 +139,10 @@ DEFAULT_PROFILE = {
     "kv_type": "f16", "kv_type_v": "f16",
     "rope_freq_base": 0.0, "rope_freq_scale": 0.0,
     "extra_args": "", "system_prompt": "", "mmproj": "", "mmproj_disable": False,
-    "split_mode": "layer", "main_gpu": 0, "tensor_split": "", "draft_model": "",
+    "mmproj_cpu": False,
+    "split_mode": "layer", "main_gpu": 0, "tensor_split": "", "disable_autofit": False, "draft_model": "",
     "draft_spec_type": "draft-simple",
-    "mtp_enabled": False, "mtp_draft_n_max": 6,
+    "mtp_enabled": False, "mtp_model": "", "mtp_extra_args": "",
 }
 
 BACKENDS = {
@@ -150,6 +152,7 @@ BACKENDS = {
     "🐝 BeeLlama  (DFlash + TurboQuant)": r"C:\llama-bee\llama-server.exe",
     "⚛️ AtomicChat  (TurboQuant + MTP)": r"C:\llama-atomic\llama-server.exe",
     "🌿 Bonsai Ternary  (PrismML)": r"C:\llama-bonsai\build\bin\Release\llama-server.exe",
+    "🐢🚀 TurboQuant+MTP  (ljam2000)": r"C:\llama-turboquant-mtp\build\bin\Release\llama-server.exe",
 }
 
 
@@ -176,6 +179,36 @@ def load_profiles():
 
 def save_profiles(p):
     with open(PROFILES_FILE, "w") as f: json.dump(p, f, indent=2)
+
+def _migrate_model_entry(entry):
+    """
+    Convierte un perfil plano antiguo (formato v1: los ajustes directamente
+    en el dict del modelo) en la estructura con perfiles nombrados (v2:
+    {'_presets': {nombre: ajustes, ...}, '_active': nombre}).
+    Si ya está en formato v2, lo devuelve tal cual.
+    """
+    if isinstance(entry, dict) and "_presets" in entry:
+        return entry
+    flat = entry if isinstance(entry, dict) else {}
+    return {"_presets": {"default": flat}, "_active": "default"}
+
+def get_model_presets(profiles, model_key):
+    """
+    Devuelve (dict_de_presets, nombre_del_perfil_activo) para un modelo,
+    migrando sobre la marcha el formato antiguo si hace falta. Muta
+    'profiles' in-place para que la migración quede reflejada en memoria
+    (se persiste a disco la próxima vez que se llame a save_profiles).
+    """
+    entry = _migrate_model_entry(profiles.get(model_key, {}))
+    profiles[model_key] = entry
+    presets = entry.setdefault("_presets", {})
+    if not presets:
+        presets["default"] = {}
+    active = entry.get("_active") or next(iter(presets))
+    if active not in presets:
+        active = next(iter(presets))
+    entry["_active"] = active
+    return presets, active
 
 def load_settings():
     if os.path.isfile(SETTINGS_FILE):
@@ -400,8 +433,9 @@ class LoadModelDialog(ctk.CTkToplevel):
         self.result     = None
         self._vars      = {}
 
-        key  = model_path or "__default__"
-        saved = profiles.get(key, {})
+        self.model_key = model_path or "__default__"
+        self.presets, self.active_preset = get_model_presets(profiles, self.model_key)
+        saved = self.presets.get(self.active_preset, {})
         self.prof = {**DEFAULT_PROFILE, **saved}
 
         self.title("Configurar modelo")
@@ -451,6 +485,9 @@ class LoadModelDialog(ctk.CTkToplevel):
                                        text_color=C["accent2"])
         self.mem_label.pack(side="right")
 
+        # Selector de perfil con nombre (varios perfiles guardados por modelo)
+        self._sec_presets(s)
+
         # Secciones
         self._sec_hardware(s)
         self._sec_multigpu(s)
@@ -469,7 +506,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         rem_var = tk.BooleanVar(value=True)
         self._vars["remember"] = rem_var
         ctk.CTkCheckBox(footer,
-                         text=f"Recordar configuración para este modelo",
+                         text=f"Recordar configuración en este perfil",
                          variable=rem_var,
                          fg_color=C["accent"], hover_color=C["accent2"],
                          font=ctk.CTkFont("Consolas", 11),
@@ -525,6 +562,70 @@ class LoadModelDialog(ctk.CTkToplevel):
                 )
         except Exception:
             pass
+
+    def _sec_presets(self, s):
+        c = self._card(s)
+        row = ctk.CTkFrame(c, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(row, text="👤 Perfil:",
+                     font=ctk.CTkFont("Consolas", 12, "bold"),
+                     text_color=C["accent2"]).pack(side="left", padx=(0, 8))
+        self.preset_var = tk.StringVar(value=self.active_preset)
+        names = sorted(self.presets.keys())
+        self.preset_combo = ctk.CTkComboBox(row, variable=self.preset_var, values=names,
+                                             command=self._on_preset_change,
+                                             fg_color=C["input"], text_color=C["text"],
+                                             dropdown_fg_color=C["card2"],
+                                             button_color=C["accent"],
+                                             button_hover_color=C["accent2"],
+                                             font=ctk.CTkFont("Consolas", 12),
+                                             width=220, height=32)
+        self.preset_combo.pack(side="left")
+        ctk.CTkButton(row, text="🗑", width=32, height=32,
+                       fg_color="transparent", hover_color=C["card2"],
+                       text_color=C["red"], font=ctk.CTkFont("Consolas", 13),
+                       command=self._delete_current_preset).pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(c,
+                     text="Elige un perfil existente para cargar sus ajustes, o escribe un "
+                          "nombre nuevo (p.ej. «codificación» o «chat») para crear otro "
+                          "perfil independiente para este mismo modelo. Se guarda al pulsar "
+                          "\"Cargar modelo\" con la casilla de abajo marcada.",
+                     font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
+                     wraplength=_scale(560), justify="left"
+                     ).pack(anchor="w", padx=16, pady=(0, 12))
+
+    def _on_preset_change(self, choice):
+        name = (choice or "").strip()
+        if not name or name not in self.presets:
+            # Nombre nuevo (aún no existe): no hay nada que cargar, se
+            # creará al guardar con la configuración actual.
+            return
+        self.active_preset = name
+        saved = self.presets.get(name, {})
+        self.prof = {**DEFAULT_PROFILE, **saved}
+        self._load_vars()
+
+    def _delete_current_preset(self):
+        name = (self.preset_var.get() or "").strip()
+        if not name or name not in self.presets:
+            messagebox.showinfo("LlamaStation", f"El perfil «{name}» no existe todavía.")
+            return
+        if len(self.presets) <= 1:
+            messagebox.showinfo("LlamaStation", "No puedes borrar el único perfil de este modelo.")
+            return
+        if not messagebox.askyesno("LlamaStation",
+                                    f"¿Borrar el perfil «{name}»? No se puede deshacer."):
+            return
+        del self.presets[name]
+        entry = self.profiles.setdefault(self.model_key, {})
+        entry["_presets"] = self.presets
+        if entry.get("_active") == name:
+            entry["_active"] = next(iter(self.presets))
+        save_profiles(self.profiles)
+        self.preset_combo.configure(values=sorted(self.presets.keys()))
+        new_name = entry["_active"]
+        self.preset_var.set(new_name)
+        self._on_preset_change(new_name)
 
     def _sec_hardware(self, s):
         self._title(s, T("sec_hardware"))
@@ -600,6 +701,24 @@ class LoadModelDialog(ctk.CTkToplevel):
         else:
             ts_frame.pack(fill="x", padx=16, pady=(0, 12))
 
+        # Switch: desactivar auto-fit (-fit off) — respeta tensor-split/ngl a rajatabla
+        autofit_row = ctk.CTkFrame(c, fg_color="transparent")
+        autofit_row.pack(fill="x", padx=16, pady=(0, 6))
+        ctk.CTkLabel(autofit_row, text=T("disable_autofit"),
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["sub"],
+                     wraplength=_scale(480), justify="left"
+                     ).pack(side="left")
+        _autofit_var = tk.BooleanVar(value=False)
+        self._vars["disable_autofit"] = _autofit_var
+        ctk.CTkSwitch(autofit_row, variable=_autofit_var, text="",
+                       fg_color=C["input"], progress_color=C["accent"],
+                       button_color=C["accent2"]).pack(side="right")
+        ctk.CTkLabel(c,
+            text=T("disable_autofit_tip"),
+            font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
+            wraplength=_scale(560), justify="left"
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
         ctk.CTkFrame(c, height=4, fg_color="transparent").pack()
 
     def _sec_cpu_ram(self, s):
@@ -660,6 +779,7 @@ class LoadModelDialog(ctk.CTkToplevel):
         self._slider(c, T("sl_batch"),    "batch_size",  64,   4096,  64, int)
         self._slider(c, T("sl_ubatch"),   "ubatch_size", 64,   4096,  64, int)
         self._slider(c, T("sl_max_tok"),  "max_tokens",  -1, 131072,  64, int)
+        self._slider(c, T("sl_ctx_checkpoints"), "ctx_checkpoints", 1, 64, 1, int)
 
     def _sec_sampling(self, s):
         self._title(s, T("sec_sampling"))
@@ -805,6 +925,18 @@ class LoadModelDialog(ctk.CTkToplevel):
                        fg_color=C["input"], progress_color=C["accent"],
                        button_color=C["accent2"]).pack(side="right")
 
+        # Switch: mmproj en CPU en vez de VRAM (--no-mmproj-offload)
+        cpu_row = ctk.CTkFrame(c, fg_color="transparent")
+        cpu_row.pack(fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(cpu_row, text=T("mmproj_cpu"),
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["sub"]
+                     ).pack(side="left")
+        _mmproj_cpu_var = tk.BooleanVar(value=False)
+        self._vars["mmproj_cpu"] = _mmproj_cpu_var
+        ctk.CTkSwitch(cpu_row, variable=_mmproj_cpu_var, text="",
+                       fg_color=C["input"], progress_color=C["accent"],
+                       button_color=C["accent2"]).pack(side="right")
+
     def _sec_extra(self, s):
         self._title(s, T("sec_extra"))
         c = self._card(s)
@@ -899,8 +1031,48 @@ class LoadModelDialog(ctk.CTkToplevel):
                        button_color=C["accent"],
                        font=ctk.CTkFont("Consolas", 11),
                        text_color=C["text"]).pack(side="left")
-        self._slider(c, T("mtp_draft_n_max"),
-                     "mtp_draft_n_max", 1, 12, 1, int)
+
+        # Modelo MTP pequeño (opcional — algunos GGUF MTP lo llevan incluido,
+        # otros necesitan un modelo drafter aparte)
+        ctk.CTkLabel(c, text="Modelo MTP pequeño  (opcional — solo si tu GGUF no lo lleva incluido)",
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["yellow"]
+                     ).pack(anchor="w", padx=16, pady=(8, 4))
+        mtp_model_var = tk.StringVar()
+        self._vars["mtp_model"] = mtp_model_var
+        mtp_model_row = ctk.CTkFrame(c, fg_color="transparent")
+        mtp_model_row.pack(fill="x", padx=16, pady=(0, 8))
+        ctk.CTkEntry(mtp_model_row, textvariable=mtp_model_var,
+                      fg_color=C["input"], text_color=C["text"],
+                      font=ctk.CTkFont("Consolas", 12),
+                      placeholder_text="p.ej. C:\\modelos_llamaforge\\Qwen3.6-27B-MTP-draft.gguf",
+                      height=34).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(mtp_model_row, text="Browse", width=90, height=34,
+                       fg_color=C["card2"], hover_color=C["border"],
+                       font=ctk.CTkFont("Consolas", 12),
+                       command=lambda: mtp_model_var.set(
+                           filedialog.askopenfilename(
+                               title="Seleccionar GGUF del modelo MTP pequeño",
+                               filetypes=[("GGUF", "*.gguf"), ("Todos", "*.*")]
+                           ) or mtp_model_var.get()
+                       )).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(mtp_model_row, text="✕", width=32, height=34,
+                       fg_color="transparent", hover_color=C["card2"],
+                       text_color=C["dim"], font=ctk.CTkFont("Consolas", 13),
+                       command=lambda: mtp_model_var.set("")
+                       ).pack(side="left", padx=(4, 0))
+
+        # Flags manuales de MTP — se añaden tal cual a la línea de comandos,
+        # nada de valores hardcodeados (p.ej. --spec-type draft-mtp --spec-draft-n-max 2)
+        ctk.CTkLabel(c, text="Flags MTP  (se escriben a mano, se añaden tal cual al comando)",
+                     font=ctk.CTkFont("Consolas", 11), text_color=C["yellow"]
+                     ).pack(anchor="w", padx=16, pady=(0, 4))
+        mtp_extra_var = tk.StringVar()
+        self._vars["mtp_extra_args"] = mtp_extra_var
+        ctk.CTkEntry(c, textvariable=mtp_extra_var,
+                      fg_color=C["input"], text_color=C["text"],
+                      font=ctk.CTkFont("Consolas", 12),
+                      placeholder_text="--spec-type draft-mtp --spec-draft-n-max 2",
+                      height=36).pack(fill="x", padx=16, pady=(0, 4))
         ctk.CTkLabel(c,
                      text=T("mtp_manual_hint"),
                      font=ctk.CTkFont("Consolas", 10), text_color=C["dim"],
@@ -998,8 +1170,11 @@ class LoadModelDialog(ctk.CTkToplevel):
             try: prof[k] = v.get()
             except: pass
         if self._vars.get("remember") and self._vars["remember"].get():
-            key = self.model_path or "__default__"
-            self.profiles[key] = prof
+            name = (self.preset_var.get() or "default").strip() or "default"
+            self.presets[name] = prof
+            entry = self.profiles.setdefault(self.model_key, {})
+            entry["_presets"] = self.presets
+            entry["_active"] = name
             save_profiles(self.profiles)
         self.result = prof
         self.destroy()
@@ -5184,7 +5359,10 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         if self.current_model: args += ["-m", self.current_model]
         mmproj = str(p.get("mmproj", "")).strip()
         mmproj_disabled = bool(p.get("mmproj_disable", False))
-        if mmproj and os.path.isfile(mmproj) and not mmproj_disabled: args += ["--mmproj", mmproj]
+        if mmproj and os.path.isfile(mmproj) and not mmproj_disabled:
+            args += ["--mmproj", mmproj]
+            if bool(p.get("mmproj_cpu", False)):
+                args += ["--no-mmproj-offload"]
         args += [
             "--host", host, "--port", port,
             "-ngl",  str(int(p.get("gpu_layers",-1))),
@@ -5235,6 +5413,8 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         ts = str(p.get("tensor_split", "")).strip()
         if ts:
             args += ["--tensor-split", ts]
+        if bool(p.get("disable_autofit", False)):
+            args += ["-fit", "off"]
         # TurboQuant fork: deshabilitar prompt cache para no saturar RAM
         # (el fork activa un cache de hasta 8 GB por defecto)
         if "llama-turboquant" in exe.replace("\\", "/"):
@@ -5250,6 +5430,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         if seed != -1: args += ["--seed", str(seed)]
         max_tok = int(p.get("max_tokens", 2048))
         if max_tok > 0: args += ["-n", str(max_tok)]
+        args += ["--ctx-checkpoints", str(int(p.get("ctx_checkpoints", 32)))]
         # Deshabilitar reasoning_content en el stream para compatibilidad con
         # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
         args += ["--reasoning-format", "none"]
@@ -5303,8 +5484,14 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             for i, a in enumerate(args):
                 if a == "-np" and i + 1 < len(args):
                     args[i + 1] = "1"
-            args += ["--spec-type", "mtp",
-                     "--spec-draft-n-max", str(int(p.get("mtp_draft_n_max", 6)))]
+            # Modelo MTP pequeño, solo si el GGUF no lo lleva incluido
+            mtp_model = str(p.get("mtp_model", "")).strip()
+            if mtp_model and os.path.isfile(mtp_model):
+                args += ["--model-draft", mtp_model, "-ngld", "99"]
+            # Flags MTP escritos a mano por el usuario (sin nada hardcodeado)
+            mtp_extra = str(p.get("mtp_extra_args", "")).strip()
+            if mtp_extra:
+                args.extend(mtp_extra.split())
         return args
 
     def _preview_cmd(self):
@@ -6106,7 +6293,8 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         last = self.settings.get("last_model", "")
         if last and os.path.isfile(last):
             self.current_model = last
-            saved_prof = self.profiles.get(last, {})
+            presets, active = get_model_presets(self.profiles, last)
+            saved_prof = presets.get(active, {})
             self.current_prof = {**DEFAULT_PROFILE, **saved_prof}
             self.model_label.configure(text=Path(last).name)
             self._log(f"[{datetime.now():%H:%M:%S}] Modelo restaurado: {Path(last).name}")
@@ -7086,10 +7274,10 @@ print(message.content[0].text)"""
         ctk.CTkFrame(sc, height=24, fg_color="transparent").pack()
         return f
 
-def _run_headless(model_path: str, port: str, host: str):
+def _run_headless(model_path: str, port: str, host: str, profile_name: str = ""):
     """
-    Modo headless: arranca llama-server sin GUI usando el perfil guardado del modelo.
-    Ctrl+C para detener.
+    Modo headless: arranca llama-server sin GUI usando un perfil guardado del
+    modelo (el activo, o el indicado con --profile). Ctrl+C para detener.
     """
     import signal
 
@@ -7100,8 +7288,14 @@ def _run_headless(model_path: str, port: str, host: str):
     if host:
         settings["host"] = host
 
-    key   = model_path
-    saved = profiles.get(key, {})
+    key = model_path
+    presets, active = get_model_presets(profiles, key)
+    preset_name = (profile_name or "").strip() or active
+    if preset_name not in presets:
+        print(f"[LlamaStation] Aviso: el perfil «{preset_name}» no existe para este modelo, "
+              f"usando «{active}».")
+        preset_name = active
+    saved = presets.get(preset_name, {})
     prof  = {**DEFAULT_PROFILE, **saved}
 
     exe = settings.get("server_path", find_llama_server())
@@ -7145,6 +7339,8 @@ def _run_headless(model_path: str, port: str, host: str):
         args += ["--split-mode", sm]
     ts = str(p.get("tensor_split", "")).strip()
     if ts: args += ["--tensor-split", ts]
+    if bool(p.get("disable_autofit", False)):
+        args += ["-fit", "off"]
     if "llama-turboquant" in exe.replace("\\", "/"):
         args += ["--cache-ram", "0"]
     # Sampling — defaults del servidor para todos los clientes
@@ -7158,6 +7354,7 @@ def _run_headless(model_path: str, port: str, host: str):
     if seed != -1: args += ["--seed", str(seed)]
     max_tok = int(p.get("max_tokens", 2048))
     if max_tok > 0: args += ["-n", str(max_tok)]
+    args += ["--ctx-checkpoints", str(int(p.get("ctx_checkpoints", 32)))]
     # Deshabilitar reasoning_content en el stream para compatibilidad con
     # clientes OpenAI-compatible que no lo soportan (OpenClaw, etc.)
     args += ["--reasoning-format", "none"]
@@ -7186,8 +7383,14 @@ def _run_headless(model_path: str, port: str, host: str):
         for i, a in enumerate(args):
             if a == "-np" and i + 1 < len(args):
                 args[i + 1] = "1"
-        args += ["--spec-type", "mtp",
-                 "--spec-draft-n-max", str(int(p.get("mtp_draft_n_max", 6)))]
+        # Modelo MTP pequeño, solo si el GGUF no lo lleva incluido
+        mtp_model = str(p.get("mtp_model", "")).strip()
+        if mtp_model and os.path.isfile(mtp_model):
+            args += ["--model-draft", mtp_model, "-ngld", "99"]
+        # Flags MTP escritos a mano por el usuario (sin nada hardcodeado)
+        mtp_extra = str(p.get("mtp_extra_args", "")).strip()
+        if mtp_extra:
+            args.extend(mtp_extra.split())
     model_name = Path(model_path).name
     pport = settings.get("port", "8080")
     phost = settings.get("host", "127.0.0.1")
@@ -7198,7 +7401,7 @@ def _run_headless(model_path: str, port: str, host: str):
 ╚══════════════════════════════════════════════════════╝
   Modelo  : {model_name}
   Servidor: http://{phost}:{pport}
-  Perfil  : {'guardado' if key in profiles else 'por defecto'}
+  Perfil  : {preset_name}
   Cmd     : {' '.join(args[:6])} ...
 
   Presiona Ctrl+C para detener.
@@ -7241,6 +7444,7 @@ if __name__ == "__main__":
     parser.add_argument("--model",   type=str, default="",    help="Ruta al modelo GGUF")
     parser.add_argument("--port",    type=str, default="",    help="Puerto del servidor (sobreescribe settings)")
     parser.add_argument("--host",    type=str, default="",    help="Host del servidor (sobreescribe settings)")
+    parser.add_argument("--profile", type=str, default="",    help="Nombre del perfil a usar, si el modelo tiene varios guardados (por defecto: el activo)")
     args = parser.parse_args()
 
     if args.no_gui:
@@ -7269,8 +7473,11 @@ if __name__ == "__main__":
 
             for i, path in enumerate(gguf_files, 1):
                 name = Path(path).name
-                has_profile = path in profiles
-                tag = "  (perfil guardado ✓)" if has_profile else "  (sin perfil, usará defaults)"
+                if path in profiles:
+                    presets, active = get_model_presets(profiles, path)
+                    tag = f"  (perfiles: {', '.join(sorted(presets.keys()))} · activo: {active})"
+                else:
+                    tag = "  (sin perfil, usará defaults)"
                 print(f"  {i}. {name}{tag}")
 
             print(f"\n  0. Cancelar")
@@ -7293,9 +7500,33 @@ if __name__ == "__main__":
 
                 print(f"  ⚠ Número no válido. Elige entre 1 y {len(gguf_files)}, o 0 para cancelar.")
 
-            _run_headless(selected, args.port, args.host)
+            # Si el modelo tiene varios perfiles y no se indicó --profile,
+            # preguntar cuál usar.
+            chosen_profile = args.profile
+            presets, active = get_model_presets(profiles, selected)
+            if not chosen_profile and len(presets) > 1:
+                names = sorted(presets.keys())
+                print(f"\n  Este modelo tiene varios perfiles guardados:")
+                for j, n in enumerate(names, 1):
+                    marker = " (activo)" if n == active else ""
+                    print(f"    {j}. {n}{marker}")
+                while True:
+                    try:
+                        pchoice = input(f"  Elige perfil [1-{len(names)}] (Enter = activo): ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        print("\n[LlamaStation] Cancelado.")
+                        sys.exit(0)
+                    if pchoice == "":
+                        chosen_profile = active
+                        break
+                    if pchoice.isdigit() and 1 <= int(pchoice) <= len(names):
+                        chosen_profile = names[int(pchoice) - 1]
+                        break
+                    print(f"  ⚠ Opción no válida.")
+
+            _run_headless(selected, args.port, args.host, chosen_profile)
         else:
-            _run_headless(args.model, args.port, args.host)
+            _run_headless(args.model, args.port, args.host, args.profile)
     else:
         app = LlamaStation()
         app.mainloop()

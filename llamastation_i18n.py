@@ -7,6 +7,7 @@ STRINGS = {
     "es": {
         # ── Navegación ────────────────────────────────────────────────
         "nav_chat":        "Chat",
+        "nav_agent":       "Agent",
         "nav_server":      "Servidor",
         "nav_logs":        "Logs",
         "nav_info":        "Info modelo",
@@ -21,6 +22,8 @@ STRINGS = {
         "my_models":       "📂  Mis modelos",
         "download_models": "🌐  Descargar modelos",
         "server_label":    "SERVIDOR",
+        "server_b_label":  "SERVIDOR B",
+        "gpu_b_label":     "GPU asignada a B:",
         "server_stopped":  "Detenido",
         "server_port":     "puerto: —",
         "start_server":    "▶  Iniciar servidor",
@@ -57,6 +60,7 @@ STRINGS = {
         "server_network":     "🌐 Red",
         "server_port_lbl":    "Puerto",
         "server_host_lbl":    "Host",
+        "server_port_b_lbl":  "Puerto B (9090)",
         "server_save":        "💾 Guardar",
         "server_cmd":         "📋 Comando generado",
         "server_cmd_preview": "Actualizar previsualización",
@@ -283,6 +287,7 @@ STRINGS = {
     "en": {
         # ── Navigation ────────────────────────────────────────────────
         "nav_chat":        "Chat",
+        "nav_agent":       "Agent",
         "nav_server":      "Server",
         "nav_logs":        "Logs",
         "nav_info":        "Model Info",
@@ -297,6 +302,8 @@ STRINGS = {
         "my_models":       "📂  My models",
         "download_models": "🌐  Download models",
         "server_label":    "SERVER",
+        "server_b_label":  "SERVER B",
+        "gpu_b_label":     "GPU assigned to B:",
         "server_stopped":  "Stopped",
         "server_port":     "port: —",
         "start_server":    "▶  Start server",
@@ -333,6 +340,7 @@ STRINGS = {
         "server_network":     "🌐 Network",
         "server_port_lbl":    "Port",
         "server_host_lbl":    "Host",
+        "server_port_b_lbl":  "Port B (9090)",
         "server_save":        "💾 Save",
         "server_cmd":         "📋 Generated command",
         "server_cmd_preview": "Update preview",

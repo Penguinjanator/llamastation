@@ -44,6 +44,11 @@ try:
 except ImportError:
     _TG_OK = False
     _VOICE_OK = False
+try:
+    from llamastation_agent.ui.agent_panel import build_agent_panel
+    _AGENT_OK = True
+except ImportError:
+    _AGENT_OK = False
 
 # Flag para ocultar ventanas de consola en Windows al lanzar subprocesos
 _NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
@@ -153,6 +158,7 @@ BACKENDS = {
     "⚛️ AtomicChat  (TurboQuant + MTP)": r"C:\llama-atomic\llama-server.exe",
     "🌿 Bonsai Ternary  (PrismML)": r"C:\llama-bonsai\build\bin\Release\llama-server.exe",
     "🐢🚀 TurboQuant+MTP  (ljam2000)": r"C:\llama-turboquant-mtp\build\bin\Release\llama-server.exe",
+    "🌸 Bonsai DFlash2  (ProCreations)": r"C:\llama-bonsai-dflash2\build\bin\Release\llama-server.exe",
 }
 
 
@@ -215,7 +221,8 @@ def load_settings():
         try:
             with open(SETTINGS_FILE) as f: return json.load(f)
         except: pass
-    return {"server_path": find_llama_server(), "port": "8080", "host": "127.0.0.1", "theme": "dark", "models_dir": str(Path.home() / "models")}
+    return {"server_path": find_llama_server(), "port": "8080", "host": "127.0.0.1", "theme": "dark", "models_dir": str(Path.home() / "models"),
+            "port_b": "9090", "main_gpu_b": 0, "last_model_b": ""}
 
 def save_settings(d):
     with open(SETTINGS_FILE, "w") as f: json.dump(d, f, indent=2)
@@ -1780,6 +1787,9 @@ class ModelBrowserDialog(ctk.CTkToplevel):
         self.result_path = None
         self.result_dir  = None
         self._models     = []
+        # Rutas de modelos marcados como favoritos. Se guardan en settings para
+        # que los favoritos sobrevivan al reinicio de LlamaStation.
+        self._favorites  = set(self.settings.get("favorite_models", []))
 
         self.title("Seleccionar modelo")
         self.geometry(f"{_scale(680)}x{_scale(580)}")
@@ -1872,7 +1882,11 @@ class ModelBrowserDialog(ctk.CTkToplevel):
             w.destroy()
 
         models = self._models
-        self.count_label.configure(text=f"{len(models)} modelos")
+        favorite_models = [m for m in models if m["path"] in self._favorites]
+        regular_models = [m for m in models if m["path"] not in self._favorites]
+        self.count_label.configure(
+            text=f"{len(models)} modelos · {len(favorite_models)} favoritos"
+        )
 
         if not models:
             lbl = ctk.CTkLabel(self.list_frame,
@@ -1882,9 +1896,28 @@ class ModelBrowserDialog(ctk.CTkToplevel):
             lbl.pack(pady=80)
             return
 
-        # Agrupar por carpeta
+        # Los favoritos aparecen SIEMPRE arriba, independientemente de la carpeta.
+        if favorite_models:
+            fhdr = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+            fhdr.pack(fill="x", padx=8, pady=(10, 2))
+            ctk.CTkLabel(
+                fhdr, text="  ⭐  Favoritos",
+                font=ctk.CTkFont("Consolas", 11, "bold"),
+                text_color=C["yellow"]
+            ).pack(side="left")
+            ctk.CTkLabel(
+                fhdr, text=f"{len(favorite_models)} modelo{'s' if len(favorite_models) != 1 else ''}",
+                font=ctk.CTkFont("Consolas", 10), text_color=C["dim"]
+            ).pack(side="right")
+            ctk.CTkFrame(self.list_frame, height=1, fg_color=C["border"]).pack(
+                fill="x", padx=8, pady=(0, 4)
+            )
+            for m in favorite_models:
+                self._add_model_row(m)
+
+        # El resto conserva la organización por carpeta.
         folders = {}
-        for m in models:
+        for m in regular_models:
             key = m["folder"] or "— sin carpeta —"
             folders.setdefault(key, []).append(m)
 
@@ -1922,11 +1955,28 @@ class ModelBrowserDialog(ctk.CTkToplevel):
             else:
                 size_str = f"{s/1_048_576:.0f} MB"
 
-        row = ctk.CTkFrame(self.list_frame, fg_color=C["card"], corner_radius=8, cursor="hand2")
+        is_favorite = m["path"] in self._favorites
+        row = ctk.CTkFrame(
+            self.list_frame,
+            fg_color=C["card2"] if is_favorite else C["card"],
+            corner_radius=8, cursor="hand2"
+        )
         row.pack(fill="x", padx=8, pady=2)
 
         inner = ctk.CTkFrame(row, fg_color="transparent")
-        inner.pack(fill="x", padx=14, pady=10)
+        inner.pack(fill="x", padx=10, pady=10)
+
+        # Estrella de favorito. No selecciona el modelo al pulsarla; solo
+        # cambia el estado y vuelve a ordenar la lista.
+        ctk.CTkButton(
+            inner,
+            text="★" if is_favorite else "☆",
+            width=32, height=32,
+            fg_color="transparent", hover_color=C["card2"],
+            text_color=C["yellow"] if is_favorite else C["dim"],
+            font=ctk.CTkFont("Consolas", 20),
+            command=lambda path=m["path"]: self._toggle_favorite(path)
+        ).pack(side="left", padx=(0, 8))
 
         left_col = ctk.CTkFrame(inner, fg_color="transparent")
         left_col.pack(side="left", fill="x", expand=True)
@@ -1968,6 +2018,19 @@ class ModelBrowserDialog(ctk.CTkToplevel):
             w.bind("<Enter>", lambda e, r=row: r.configure(fg_color=C["card2"]))
             w.bind("<Leave>", lambda e, r=row: r.configure(fg_color=C["card"]))
 
+    def _toggle_favorite(self, path):
+        """Marca/desmarca un modelo como favorito y lo mueve arriba de la lista."""
+        if path in self._favorites:
+            self._favorites.discard(path)
+        else:
+            self._favorites.add(path)
+
+        # Guardar como lista JSON estable y eliminar rutas que ya no existen.
+        self._favorites.intersection_update({m["path"] for m in self._models})
+        self.settings["favorite_models"] = sorted(self._favorites, key=str.lower)
+        save_settings(self.settings)
+        self._render()
+
     def _delete_model(self, path, row_widget, size_str):
         name = os.path.basename(path)
         if not messagebox.askyesno(
@@ -1979,7 +2042,10 @@ class ModelBrowserDialog(ctk.CTkToplevel):
             os.remove(path)
             row_widget.destroy()
             self._models = [m for m in self._models if m["path"] != path]
-            self.count_label.configure(text=f"{len(self._models)} modelos")
+            self._favorites.discard(path)
+            self.settings["favorite_models"] = sorted(self._favorites, key=str.lower)
+            save_settings(self.settings)
+            self._render()
             messagebox.showinfo(T("delete_model_confirm_title"), T("delete_model_ok"))
         except Exception as e:
             messagebox.showerror(T("delete_model_confirm_title"), T("delete_model_err", err=str(e)))
@@ -2303,6 +2369,17 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.chat_history     = []
         self.current_model    = ""
         self.current_prof     = dict(DEFAULT_PROFILE)
+        # ── Slot B: segundo LLM en GPU propia (puerto 9090) ────────────
+        self.server_process_B              = None
+        self.server_running_B              = False
+        self.current_model_B               = ""
+        self.current_prof_B                = dict(DEFAULT_PROFILE)
+        self._proxy_server_B               = None
+        self._stopping_B                   = False
+        self._log_proc_B                   = None
+        self._log_stop_B                   = threading.Event()
+        self._last_log_lines_B             = []
+        self._pending_console_prompt_n_B   = None
         self._stop_generation = False   # flag para abortar generación
         self._reasoning_control_supported = True  # se desactiva solo si el backend responde 404
         self._current_gen_id = None     # id de la generación en curso (para /control)
@@ -2732,6 +2809,79 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
         ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=10)
 
+        # ── PANEL B: segundo LLM en GPU propia (puerto 9090) ─────────────
+        mc_b = ctk.CTkFrame(sb, fg_color=C["card"], corner_radius=10)
+        mc_b.pack(fill="x", padx=12, pady=(0, 6))
+        mi_b = ctk.CTkFrame(mc_b, fg_color="transparent")
+        mi_b.pack(fill="x", padx=12, pady=10)
+        ctk.CTkLabel(mi_b, text=T("loaded_model"),
+                     font=ctk.CTkFont("Consolas", 9, "bold"),
+                     text_color=C["sub"]).pack(anchor="w")
+        self.model_label_B = ctk.CTkLabel(mi_b, text=T("no_model"),
+                                          font=ctk.CTkFont("Consolas", 11),
+                                          text_color=C["text"],
+                                          wraplength=_scale(210), justify="left")
+        self.model_label_B.pack(anchor="w", pady=(4, 0))
+
+        ctk.CTkButton(sb, text=T("my_models"),
+                       fg_color=C["card2"], hover_color=C["border"],
+                       text_color=C["text"],
+                       font=ctk.CTkFont("Consolas", 12), height=38,
+                       corner_radius=8,
+                       command=lambda: self._open_model_browser("B")
+                       ).pack(fill="x", padx=12, pady=(0, 3))
+
+        sc_b = ctk.CTkFrame(sb, fg_color=C["card"], corner_radius=10)
+        sc_b.pack(fill="x", padx=12, pady=(0, 6))
+        si_b = ctk.CTkFrame(sc_b, fg_color="transparent")
+        si_b.pack(fill="x", padx=12, pady=10)
+        ctk.CTkLabel(si_b, text=T("server_b_label"),
+                     font=ctk.CTkFont("Consolas", 9, "bold"),
+                     text_color=C["sub"]).pack(anchor="w")
+        sr_b = ctk.CTkFrame(si_b, fg_color="transparent")
+        sr_b.pack(fill="x", pady=(4, 0))
+        self.status_dot_B    = ctk.CTkLabel(sr_b, text="●", width=16,
+                                             font=ctk.CTkFont(size=14), text_color=C["red"])
+        self.status_dot_B.pack(side="left")
+        self.status_label_B   = ctk.CTkLabel(sr_b, text=T("server_stopped"),
+                                              font=ctk.CTkFont("Consolas", 12),
+                                              text_color=C["text"])
+        self.status_label_B.pack(side="left", padx=4)
+        self.port_label_B     = ctk.CTkLabel(si_b, text=T("server_port"),
+                                              font=ctk.CTkFont("Consolas", 10),
+                                              text_color=C["sub"])
+        self.port_label_B.pack(anchor="w", pady=(2, 0))
+
+        gp_b = ctk.CTkFrame(sb, fg_color="transparent")
+        gp_b.pack(fill="x", padx=12, pady=(0, 4))
+        ctk.CTkLabel(gp_b, text=T("gpu_b_label"),
+                     font=ctk.CTkFont("Consolas", 10),
+                     text_color=C["sub"]).pack(side="left")
+        self.gpu_b_var = tk.StringVar(value=str(int(self.settings.get("main_gpu_b", 0))))
+        for _gpu_b in ("0", "1"):
+            ctk.CTkRadioButton(
+                gp_b, text=f"GPU {_gpu_b}", variable=self.gpu_b_var, value=_gpu_b,
+                font=ctk.CTkFont("Consolas", 10), text_color=C["text"],
+                command=lambda v=_gpu_b: self._set_gpu_b(v)
+            ).pack(side="left", padx=(10, 0))
+
+        bf_b = ctk.CTkFrame(sb, fg_color="transparent")
+        bf_b.pack(fill="x", padx=12, pady=(0, 6))
+        self.btn_start_B = ctk.CTkButton(bf_b, text=T("start_server"),
+                                          fg_color=C["accent"], hover_color="#6457e0",
+                                          font=ctk.CTkFont("Consolas", 12, "bold"),
+                                          height=38, command=lambda: self.start_server("B"))
+        self.btn_start_B.pack(fill="x", pady=(0, 5))
+        self.btn_stop_B = ctk.CTkButton(bf_b, text=T("stop_server"),
+                                         fg_color="#3a1a1a", hover_color="#5a2020",
+                                         text_color=C["red"],
+                                         font=ctk.CTkFont("Consolas", 12),
+                                         height=38, state="disabled",
+                                         command=lambda: self.stop_server("B"))
+        self.btn_stop_B.pack(fill="x")
+
+        ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=10)
+
         # ── Selector de backend ─────────────────────────────────────────
         ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(4, 6))
         ctk.CTkLabel(sb, text=T("backend_label"),
@@ -2771,6 +2921,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         _tg_label = "Telegram" if self.settings.get("lang", "es") == "es" else "Telegram"
         for icon, label_key, cmd in [
             ("💬", "nav_chat",     self._show_chat),
+            ("🤖", "nav_agent",    self._show_agent),
             ("⚙️", "nav_server",  self._show_server),
             ("📋", "nav_logs",     self._show_logs),
             ("ℹ️", "nav_info",    self._show_info),
@@ -2858,6 +3009,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     def _build_tabs(self):
         self.frames = {
             "Chat":        self._build_chat(self.main),
+            "Agent":       self._build_agent(self.main),
             "Servidor":    self._build_server(self.main),
             "Logs":        self._build_logs(self.main),
             "Info modelo": self._build_info(self.main),
@@ -2878,7 +3030,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             self._refresh_stats_view()
         # nav_btns ahora usa label_key como clave
         key_map = {
-            "Chat": "nav_chat", "Servidor": "nav_server", "Logs": "nav_logs",
+            "Chat": "nav_chat", "Agent": "nav_agent", "Servidor": "nav_server", "Logs": "nav_logs",
             "Info modelo": "nav_info", "Descargar": "nav_download", "API Docs": "nav_api",
             "Voz": "nav_voice", "Telegram": "nav_telegram", "Estadísticas": "nav_stats",
             "Acerca de": "nav_about",
@@ -2929,6 +3081,15 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     def _show_voice(self):  self._show_frame("Voz")
     def _show_telegram(self): self._show_frame("Telegram")
     def _show_stats(self):    self._show_frame("Estadísticas")
+    def _show_agent(self):    self._show_frame("Agent")
+
+    def _build_agent(self, p):
+        if not _AGENT_OK:
+            f = ctk.CTkFrame(p, fg_color=C["bg"], corner_radius=0)
+            ctk.CTkLabel(f, text="Modo Agent no disponible: falta el paquete llamastation_agent",
+                         font=ctk.CTkFont("Consolas", 13), text_color=C["sub"]).pack(pady=60)
+            return f
+        return build_agent_panel(self, p, theme=C)
 
     # ── Modal de modelo ───────────────────────────────────────────────────
 
@@ -5179,7 +5340,8 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         sec(T("server_network"))
         self.sv_port = tk.StringVar(value=self.settings.get("port","8080"))
         self.sv_host = tk.StringVar(value=self.settings.get("host","127.0.0.1"))
-        for lbl, var, ph in [(T("server_port_lbl"), self.sv_port, "8080"), (T("server_host_lbl"), self.sv_host, "127.0.0.1")]:
+        self.sv_port_b = tk.StringVar(value=self.settings.get("port_b","9090"))
+        for lbl, var, ph in [(T("server_port_lbl"), self.sv_port, "8080"), (T("server_host_lbl"), self.sv_host, "127.0.0.1"), (T("server_port_b_lbl"), self.sv_port_b, "9090")]:
             r = ctk.CTkFrame(sc, fg_color="transparent"); r.pack(fill="x", pady=4)
             ctk.CTkLabel(r, text=lbl, font=ctk.CTkFont("Consolas", 12),
                          text_color=C["text"], width=160, anchor="w").pack(side="left")
@@ -5347,10 +5509,13 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         self.settings["server_path"] = self.sv_exe.get()
         self.settings["port"]        = self.sv_port.get()
         self.settings["host"]        = self.sv_host.get()
+        self.settings["port_b"]      = self.sv_port_b.get()
         save_settings(self.settings)
         messagebox.showinfo(T("saved_title"), T("server_saved_ok"))
 
-    def _build_cmd_list(self):
+    def _build_cmd_list(self, slot="A"):
+        if slot == "B":
+            return self._build_cmd_list_b()
         exe   = self.settings.get("server_path","llama-server")
         port  = self.settings.get("port","8080")
         host  = self.settings.get("host","127.0.0.1")
@@ -5387,6 +5552,11 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # K y V cache pueden ser distintos (asimetría TurboQuant: q8_0-K + turbo3-V)
         kv_k = p.get("kv_type",   "f16")
         kv_v = p.get("kv_type_v", kv_k)  # fallback: igual que K si no hay V separado
+        # Build llama-turboquant-mtp: no soporta "turboN", usa "tbqN_0"
+        if "llama-turboquant" in str(exe).replace("\\", "/"):
+            _KVT = {"turbo2": "tbq3_0", "turbo3": "tbq3_0", "turbo4": "tbq4_0"}
+            kv_k = _KVT.get(kv_k, kv_k)
+            kv_v = _KVT.get(kv_v, kv_v)
         if kv_k != "f16": args += ["--cache-type-k", kv_k]
         if kv_v != "f16": args += ["--cache-type-v", kv_v]
         rb = float(p.get("rope_freq_base",0))
@@ -5493,6 +5663,70 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             if mtp_extra:
                 args.extend(mtp_extra.split())
         return args
+
+    # ── Slot B: comando para el segundo LLM en GPU propia ──────────────
+    def _build_cmd_list_b(self):
+        exe   = self.settings.get("server_path","llama-server")
+        port  = str(self.settings.get("port_b", "9090"))
+        host  = "127.0.0.1"
+        p     = self.current_prof_B
+        args  = [exe]
+        if self.current_model_B:
+            args += ["-m", self.current_model_B]
+        args += [
+            "--host", host, "--port", port,
+            "-ngl",  str(int(p.get("gpu_layers",-1))),
+            "-c",    str(int(p.get("ctx_size",4096))),
+            "-b",    str(int(p.get("batch_size",512))),
+            "-ub",   str(int(p.get("ubatch_size",512))),
+            "-t",    str(int(p.get("threads",8))),
+            "-tb",   str(int(p.get("threads_batch",8))),
+            "-np",   "1",
+        ]
+        if p.get("flash_attn"):
+            args += ["--flash-attn", "on"]
+        if p.get("mlock"):
+            args.append("--mlock")
+        if p.get("cont_batching"):
+            args.append("--cont-batching")
+        if not p.get("mmap"):
+            args.append("--no-mmap")
+        kv_k = p.get("kv_type",   "f16")
+        kv_v = p.get("kv_type_v", kv_k)
+        if kv_k != "f16": args += ["--cache-type-k", kv_k]
+        if kv_v != "f16": args += ["--cache-type-v", kv_v]
+        rb = float(p.get("rope_freq_base",0))
+        rs = float(p.get("rope_freq_scale",0))
+        if rb > 0: args += ["--rope-freq-base", str(rb)]
+        if rs > 0: args += ["--rope-freq-scale", str(rs)]
+        # TurboQuant: deshabilitar cache de prompt para no saturar RAM
+        if "llama-turboquant" in exe.replace("\\", "/"):
+            args += ["--cache-ram", "0"]
+        # Sampling flags según el perfil de B
+        args += ["--temp",           str(round(float(p.get("temperature", 0.7)), 4))]
+        args += ["--top-k",          str(int(p.get("top_k", 40)))]
+        args += ["--top-p",          str(round(float(p.get("top_p", 0.95)), 4))]
+        args += ["--min-p",          str(round(float(p.get("min_p", 0.05)), 4))]
+        args += ["--repeat-penalty", str(round(float(p.get("repeat_penalty", 1.1)), 4))]
+        seed = int(p.get("seed", -1))
+        if seed != -1: args += ["--seed", str(seed)]
+        max_tok = int(p.get("max_tokens", 2048))
+        if max_tok > 0: args += ["-n", str(max_tok)]
+        # Compatibilidad con clientes OpenAI-compatible
+        args += ["--reasoning-format", "none"]
+        # GPU propia: forzar split-mode none + main-gpu configurado
+        args += ["--split-mode", "none", "--main-gpu", str(int(self.settings.get("main_gpu_b", 0)))]
+        # Extra args del perfil de B
+        ex = str(p.get("extra_args","")).strip()
+        if ex: args.extend(ex.split())
+        return args
+
+    def _set_gpu_b(self, value):
+        try:
+            self.settings["main_gpu_b"] = int(value)
+        except (TypeError, ValueError):
+            return
+        save_settings(self.settings)
 
     def _preview_cmd(self):
         cmd = " ".join(self._build_cmd_list())
@@ -6024,7 +6258,31 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     self.backend_var.set(bn)
                     break
 
-    def start_server(self):
+    def start_server(self, slot="A"):
+        if slot == "B":
+            if not self.current_model_B:
+                messagebox.showerror(T("err_no_model_title"), T("err_no_model")); return
+            exe = self.settings.get("server_path","")
+            if not exe or not os.path.isfile(exe):
+                messagebox.showerror(T("err_server_title"), T("err_no_server")); return
+            args = self._build_cmd_list("B")
+            self._log(f"[{datetime.now():%H:%M:%S}] $ {' '.join(args)}")
+            try:
+                self.server_process_B = subprocess.Popen(
+                    args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0
+                )
+            except FileNotFoundError:
+                messagebox.showerror(T("err_title"), f"{T('err_not_found')}: {args[0]}"); return
+            self._set_status(T("srv_starting"), C["yellow"], "B")
+            self.btn_start_B.configure(state="disabled")
+            self.btn_stop_B.configure(state="normal")
+            self._log_proc_B  = self.server_process_B
+            self._log_stop_B  = threading.Event()
+            threading.Thread(target=lambda: self._read_logs("B"), daemon=True).start()
+            threading.Thread(target=lambda: self._wait_ready("B"), daemon=True).start()
+            return
         if not self.current_model:
             messagebox.showerror(T("err_no_model_title"), T("err_no_model")); return
         exe = self.settings.get("server_path","")
@@ -6060,17 +6318,18 @@ class LlamaStation(VoiceMixin, ctk.CTk):
     _RE_PROMPT_EVAL_TOKENS = re.compile(r"prompt eval time\s*=.*?/\s*(\d+)\s*tokens")
     _RE_EVAL_TOKENS        = re.compile(r"^eval time\s*=.*?/\s*(\d+)\s*tokens")
 
-    def _parse_server_console_tokens(self, line):
+    def _parse_server_console_tokens(self, line, slot="A"):
+        _pend = "_pending_console_prompt_n_B" if slot == "B" else "_pending_console_prompt_n"
         stripped = line.strip()
         m = self._RE_PROMPT_EVAL_TOKENS.search(stripped)
         if m:
-            self._pending_console_prompt_n = int(m.group(1))
+            setattr(self, _pend, int(m.group(1)))
             return
         m = self._RE_EVAL_TOKENS.match(stripped)
-        if m and getattr(self, "_pending_console_prompt_n", None) is not None:
+        if m and getattr(self, _pend, None) is not None:
             eval_n = int(m.group(1))
-            self._record_console_tokens(self._pending_console_prompt_n, eval_n)
-            self._pending_console_prompt_n = None
+            self._record_console_tokens(getattr(self, _pend), eval_n)
+            setattr(self, _pend, None)
 
     def _record_console_tokens(self, prompt_n, eval_n):
         """Acumula el total real procesado por llama-server (todas las fuentes
@@ -6095,9 +6354,35 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             except Exception:
                 pass
 
-    def _read_logs(self):
+    def _read_logs(self, slot="A"):
         """Lee stdout linea a linea. Para limpiamente cuando stop_server()
         setea _log_stop y cierra/mata el proceso."""
+        if slot == "B":
+            self._last_log_lines_B = []
+            self._pending_console_prompt_n_B = None
+            proc = self._log_proc_B
+            try:
+                while True:
+                    if self._log_stop_B.is_set():
+                        break
+                    line = proc.stdout.readline()
+                    if line == "":   # EOF - proceso terminado
+                        break
+                    l = line.rstrip()
+                    self._last_log_lines_B.append(l)
+                    if len(self._last_log_lines_B) > 30:
+                        self._last_log_lines_B.pop(0)
+                    self._parse_server_console_tokens(l, "B")
+                    self.after(0, lambda x=l: self._log(x))
+            except Exception:
+                pass
+            if not self._log_stop_B.is_set():
+                try:
+                    rc = proc.wait(timeout=2)
+                except Exception:
+                    rc = None
+                self.after(0, lambda: self._srv_exit(rc, "B"))
+            return
         self._last_log_lines = []
         self._pending_console_prompt_n = None
         proc = self._log_proc   # referencia local al proceso activo
@@ -6124,7 +6409,19 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 rc = None
             self.after(0, lambda: self._srv_exit(rc))
 
-    def _wait_ready(self):
+    def _wait_ready(self, slot="A"):
+        if slot == "B":
+            port_b = self.settings.get("port_b", "9090")
+            for _ in range(90):
+                time.sleep(1)
+                proc = self.server_process_B
+                if not proc or proc.poll() is not None:
+                    return
+                try:
+                    if requests.get(f"http://127.0.0.1:{port_b}/health",timeout=2).status_code==200:
+                        self.after(0, lambda: self._srv_ready("B")); return
+                except: pass
+            return
         port = self.settings.get("port","8080")
         for _ in range(90):
             time.sleep(1)
@@ -6135,7 +6432,15 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     self.after(0, self._srv_ready); return
             except: pass
 
-    def _srv_ready(self):
+    def _srv_ready(self, slot="A"):
+        if slot == "B":
+            self.server_running_B = True
+            port_b = self.settings.get("port_b", "9090")
+            self._set_status(T("srv_running"), C["green"], "B")
+            self.port_label_B.configure(text=T("srv_port", port=port_b))
+            self._log(f"[{datetime.now():%H:%M:%S}] ✓ Ready B :{port_b}")
+            self._start_anthropic_proxy("B")
+            return
         self.server_running = True
         port = self.settings.get("port","8080")
         self._set_status(T("srv_running"), C["green"])
@@ -6147,8 +6452,23 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         # Arrancar proxy Anthropic Messages API
         self._start_anthropic_proxy()
 
-    def _start_anthropic_proxy(self):
+    def _start_anthropic_proxy(self, slot="A"):
         """Arranca el proxy /v1/messages en puerto+1 para Claude Code."""
+        if slot == "B":
+            port = int(self.settings.get("port_b", 9090))
+            proxy_port = port + 1
+            openai_url = f"http://127.0.0.1:{port}"
+            if self._proxy_server_B:
+                self._proxy_server_B.stop()
+            self._proxy_server_B = AnthropicProxyServer(
+                openai_url, proxy_port,
+                on_tokens=lambda i, o: self._record_tokens(i, o, source="api")
+            )
+            if self._proxy_server_B.start():
+                self._log(f"[{datetime.now():%H:%M:%S}] ✓ Anthropic proxy B :{proxy_port} (/v1/messages)")
+            else:
+                self._log(f"[{datetime.now():%H:%M:%S}] ⚠ Proxy Anthropic B no pudo arrancar en :{proxy_port}")
+            return
         port = int(self.settings.get("port", 8080))
         proxy_port = port + 1
         openai_url = f"http://127.0.0.1:{port}"
@@ -6163,7 +6483,45 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         else:
             self._log(f"[{datetime.now():%H:%M:%S}] ⚠ Proxy Anthropic no pudo arrancar en :{proxy_port}")
 
-    def _srv_exit(self, rc=None):
+    def _srv_exit(self, rc=None, slot="A"):
+        if slot == "B":
+            was_running = self.server_running_B
+            manual_stop = getattr(self, "_stopping_B", False)
+            self._stopping_B = False
+            self.server_running_B = False
+            if self._proxy_server_B:
+                self._proxy_server_B.stop()
+                self._proxy_server_B = None
+            self._set_status(T("server_stopped"), C["red"], "B")
+            self.port_label_B.configure(text=T("server_port"))
+            self.btn_start_B.configure(state="normal")
+            self.btn_stop_B.configure(state="disabled")
+            is_crash = not manual_stop and (
+                (was_running) or
+                (rc not in (None, 0, -1, -15, 1))
+            )
+            if is_crash:
+                last = getattr(self, "_last_log_lines_B", [])
+                log_tail = "\n".join(last[-10:]) if last else "(sin logs)"
+                rc_str = str(rc) if rc is not None else "?"
+                self._log(f"[{datetime.now():%H:%M:%S}] 💥 Servidor B caído (código {rc_str})")
+                auto_relaunch = getattr(self, "_wd_var", None)
+                if auto_relaunch and auto_relaunch.get() and self.current_model_B:
+                    DELAY = 5
+                    self._log(T("watchdog_relaunch_log", delay=DELAY))
+                    self._set_status(T("watchdog_relaunching"), C["yellow"], "B")
+                    self.btn_start_B.configure(state="disabled")
+                    self.btn_stop_B.configure(state="disabled")
+                    def _do_relaunch_B():
+                        if not self.server_running_B and not self.server_process_B:
+                            self.start_server("B")
+                    self.after(DELAY * 1000, _do_relaunch_B)
+                else:
+                    self.after(100, lambda r=rc_str, m=log_tail: messagebox.showerror(
+                        T("watchdog_crashed_title"),
+                        T("watchdog_crashed_msg", rc=r, log=m)
+                    ))
+            return
         was_running = self.server_running
         manual_stop = getattr(self, "_stopping", False)
         self._stopping = False
@@ -6210,8 +6568,35 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     T("watchdog_crashed_msg", rc=r, log=m)
                 ))
 
-    def stop_server(self, wait=False):
+    def stop_server(self, slot="A", wait=False):
         """Detiene el servidor correctamente liberando VRAM y RAM."""
+        if slot == "B":
+            proc = self.server_process_B
+            if not proc:
+                return
+            self.server_process_B = None
+            self._stopping_B = True
+            self._set_status("Deteniendo...", C["yellow"], "B")
+            self._log(f"[{datetime.now():%H:%M:%S}] Deteniendo servidor B...")
+            if hasattr(self, "_log_stop_B"):
+                self._log_stop_B.set()
+            def _kill_B():
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+                try:
+                    if proc.stdout:
+                        proc.stdout.close()
+                except Exception:
+                    pass
+                self.after(0, lambda: (
+                    self._log(f"[{datetime.now():%H:%M:%S}] {T('srv_stopped_log')}"),
+                    self._srv_exit(None, "B"),
+                ))
+            threading.Thread(target=_kill_B, daemon=True).start()
+            return
         proc = self.server_process
         if not proc:
             return
@@ -6282,9 +6667,19 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self.server_process.wait(timeout=4)
             except Exception:
                 pass
+        if getattr(self, "server_process_B", None):
+            try:
+                self.server_process_B.kill()
+                self.server_process_B.wait(timeout=4)
+            except Exception:
+                pass
         self.destroy()
 
-    def _set_status(self, t, color):
+    def _set_status(self, t, color, slot="A"):
+        if slot == "B":
+            self.status_dot_B.configure(text_color=color)
+            self.status_label_B.configure(text=t)
+            return
         self.status_dot.configure(text_color=color)
         self.status_label.configure(text=t)
 
@@ -6305,6 +6700,22 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                 self.server_running = True
                 self._set_status(T("srv_running_ext"), C["green"])
                 self.port_label.configure(text=T("srv_port", port=port))
+        except: pass
+        # Slot B: restaurar último modelo B y detectar servidor B ya corriendo
+        try:
+            last_b = self.settings.get("last_model_b", "")
+            if last_b and os.path.isfile(last_b):
+                self.current_model_B = last_b
+                presets_b, active_b = get_model_presets(self.profiles, last_b)
+                saved_prof_b = presets_b.get(active_b, {})
+                self.current_prof_B = {**DEFAULT_PROFILE, **saved_prof_b}
+                self.model_label_B.configure(text=Path(last_b).name)
+                self._log(f"[{datetime.now():%H:%M:%S}] Modelo B restaurado: {Path(last_b).name}")
+            port_b = self.settings.get("port_b","9090")
+            if requests.get(f"http://127.0.0.1:{port_b}/health",timeout=1).status_code==200:
+                self.server_running_B = True
+                self._set_status(T("srv_running_ext"), C["green"], "B")
+                self.port_label_B.configure(text=T("srv_port", port=port_b))
         except: pass
 
     def _open_update_dialog(self, backend_key=None):
@@ -6412,7 +6823,7 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
     # ── Model Browser ────────────────────────────────────────────────────
 
-    def _open_model_browser(self):
+    def _open_model_browser(self, target="A"):
         """Abre el modal para seleccionar modelo desde la carpeta de modelos."""
         models_dir = self.settings.get("models_dir", str(Path.home() / "models"))
         dlg = ModelBrowserDialog(self, models_dir, self.profiles, self.settings)
@@ -6429,14 +6840,22 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             load_dlg = LoadModelDialog(self, path, self.profiles)
             self.wait_window(load_dlg)
             if load_dlg.result is not None:
-                self.current_model = path
-                self.current_prof  = load_dlg.result
-                self.model_label.configure(text=Path(path).name)
-                self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
-                self.settings["last_model"] = path
-                save_settings(self.settings)
-                self._update_headless_cmd()
-                self._refresh_effort_ui()
+                if target == "B":
+                    self.current_model_B = path
+                    self.current_prof_B  = load_dlg.result
+                    self.model_label_B.configure(text=Path(path).name)
+                    self._log(f"[{datetime.now():%H:%M:%S}] Modelo B: {Path(path).name}")
+                    self.settings["last_model_b"] = path
+                    save_settings(self.settings)
+                else:
+                    self.current_model = path
+                    self.current_prof  = load_dlg.result
+                    self.model_label.configure(text=Path(path).name)
+                    self._log(f"[{datetime.now():%H:%M:%S}] Modelo: {Path(path).name}")
+                    self.settings["last_model"] = path
+                    save_settings(self.settings)
+                    self._update_headless_cmd()
+                    self._refresh_effort_ui()
 
     # ── API Docs tab ─────────────────────────────────────────────────────
 
@@ -6546,14 +6965,18 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                            corner_radius=6, command=_copy).pack(side="right")
 
         port_hint = self.settings.get("port", "8080")
+        port_b_hint = self.settings.get("port_b", "9090")
 
         # ── Intro ──────────────────────────────────────────────────────
         intro = ctk.CTkFrame(sc, fg_color=C["card"], corner_radius=10)
         intro.pack(fill="x", padx=20, pady=(16, 4))
         ctk.CTkLabel(intro,
-                     text=(f"  Tu servidor llama.cpp expone una API compatible con OpenAI en:\n"
+                     text=(f"  Tu servidor llama.cpp (Slot A) expone una API compatible con OpenAI en:\n"
                            f"  http://127.0.0.1:{port_hint}/v1\n\n"
-                           f"  Cualquier app que use la API de OpenAI funciona apuntando a esa URL."),
+                           f"  Tienes un segundo servidor (Slot B) en:\n"
+                           f"  http://127.0.0.1:{port_b_hint}/v1\n\n"
+                           f"  Cualquier app que use la API de OpenAI funciona apuntando a esa URL.\n"
+                           f"  Para el servidor B, cambia {port_hint} por {port_b_hint} en cualquier ejemplo."),
                      font=ctk.CTkFont("Consolas", 12),
                      text_color=C["text"], justify="left"
                      ).pack(anchor="w", padx=14, pady=12)
@@ -6648,13 +7071,16 @@ print(resp.json())"""
         ant_info = ctk.CTkFrame(sc, fg_color=C["card"], corner_radius=10)
         ant_info.pack(fill="x", padx=20, pady=(0, 4))
         proxy_port_hint = int(port_hint) + 1
+        proxy_port_b_hint = int(port_b_hint) + 1
         ctk.CTkLabel(ant_info,
                      text=(
                          "  LlamaStation incluye un proxy Anthropic-compatible en:\n"
                          f"  http://127.0.0.1:{proxy_port_hint}/v1/messages\n\n"
                          "  Usalo con Claude Code, el SDK oficial de Anthropic, o cualquier\n"
                          "  cliente que hable el formato Anthropic Messages API.\n"
-                         "  Se activa automaticamente al arrancar el servidor."
+                         "  Se activa automaticamente al arrancar el servidor.\n\n"
+                         f"  El proxy del servidor B está en:\n"
+                         f"  http://127.0.0.1:{proxy_port_b_hint}/v1/messages"
                      ),
                      font=ctk.CTkFont("Consolas", 12),
                      text_color=C["text"], justify="left"
@@ -7329,6 +7755,11 @@ def _run_headless(model_path: str, port: str, host: str, profile_name: str = "")
     if p.get("embeddings"):     args.append("--embeddings")
     kv_k = p.get("kv_type", "f16")
     kv_v = p.get("kv_type_v", kv_k)
+    # Build llama-turboquant-mtp: no soporta "turboN", usa "tbqN_0"
+    if "llama-turboquant" in str(exe).replace("\\", "/"):
+        _KVT = {"turbo2": "tbq3_0", "turbo3": "tbq3_0", "turbo4": "tbq4_0"}
+        kv_k = _KVT.get(kv_k, kv_k)
+        kv_v = _KVT.get(kv_v, kv_v)
     if kv_k != "f16": args += ["--cache-type-k", kv_k]
     if kv_v != "f16": args += ["--cache-type-v", kv_v]
     sm = p.get("split_mode", "layer")

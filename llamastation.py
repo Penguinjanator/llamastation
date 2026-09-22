@@ -222,7 +222,7 @@ def load_settings():
             with open(SETTINGS_FILE) as f: return json.load(f)
         except: pass
     return {"server_path": find_llama_server(), "port": "8080", "host": "127.0.0.1", "theme": "dark", "models_dir": str(Path.home() / "models"),
-            "port_b": "9090", "main_gpu_b": 0, "last_model_b": ""}
+            "port_b": "9090", "server_path_b": "", "last_model_b": ""}
 
 def save_settings(d):
     with open(SETTINGS_FILE, "w") as f: json.dump(d, f, indent=2)
@@ -2852,19 +2852,6 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                                               text_color=C["sub"])
         self.port_label_B.pack(anchor="w", pady=(2, 0))
 
-        gp_b = ctk.CTkFrame(sb, fg_color="transparent")
-        gp_b.pack(fill="x", padx=12, pady=(0, 4))
-        ctk.CTkLabel(gp_b, text=T("gpu_b_label"),
-                     font=ctk.CTkFont("Consolas", 10),
-                     text_color=C["sub"]).pack(side="left")
-        self.gpu_b_var = tk.StringVar(value=str(int(self.settings.get("main_gpu_b", 0))))
-        for _gpu_b in ("0", "1"):
-            ctk.CTkRadioButton(
-                gp_b, text=f"GPU {_gpu_b}", variable=self.gpu_b_var, value=_gpu_b,
-                font=ctk.CTkFont("Consolas", 10), text_color=C["text"],
-                command=lambda v=_gpu_b: self._set_gpu_b(v)
-            ).pack(side="left", padx=(10, 0))
-
         bf_b = ctk.CTkFrame(sb, fg_color="transparent")
         bf_b.pack(fill="x", padx=12, pady=(0, 6))
         self.btn_start_B = ctk.CTkButton(bf_b, text=T("start_server"),
@@ -2913,6 +2900,34 @@ class LlamaStation(VoiceMixin, ctk.CTk):
             command=lambda _: self._on_backend_change()
         )
         self.backend_menu.pack(fill="x", padx=14, pady=(4, 6))
+
+        # Backend del slot B (independiente del de A)
+        ctk.CTkLabel(sb, text=T("backend_b_label"),
+                     font=ctk.CTkFont("Consolas", 9, "bold"),
+                     text_color=C["sub"]).pack(anchor="w", padx=20, pady=(2, 0))
+        self.backend_var_b = tk.StringVar(value=list(BACKENDS.keys())[0])
+        cur_path_b = self.settings.get("server_path_b", "") or self.settings.get("server_path", "")
+        for bname_b, bpath_b in BACKENDS.items():
+            if cur_path_b == bpath_b:
+                self.backend_var_b.set(bname_b)
+                break
+        self.backend_menu_b = ctk.CTkOptionMenu(
+            sb,
+            variable=self.backend_var_b,
+            values=list(BACKENDS.keys()),
+            fg_color=C["card2"],
+            button_color=C["accent"],
+            button_hover_color=C["accent2"],
+            dropdown_fg_color=C["card"],
+            dropdown_hover_color=C["card2"],
+            text_color=C["text"],
+            dropdown_text_color=C["text"],
+            font=ctk.CTkFont("Consolas", 11),
+            dropdown_font=ctk.CTkFont("Consolas", 11),
+            anchor="w",
+            command=lambda _: self._on_backend_change_b()
+        )
+        self.backend_menu_b.pack(fill="x", padx=14, pady=(4, 6))
 
         ctk.CTkFrame(sb, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(2, 4))
         # ────────────────────────────────────────────────────────────────
@@ -5666,7 +5681,8 @@ class LlamaStation(VoiceMixin, ctk.CTk):
 
     # ── Slot B: comando para el segundo LLM en GPU propia ──────────────
     def _build_cmd_list_b(self):
-        exe   = self.settings.get("server_path","llama-server")
+        # Backend propio del slot B (vacío → usa el de A)
+        exe   = self.settings.get("server_path_b","") or self.settings.get("server_path","llama-server")
         port  = str(self.settings.get("port_b", "9090"))
         host  = "127.0.0.1"
         p     = self.current_prof_B
@@ -5714,19 +5730,16 @@ class LlamaStation(VoiceMixin, ctk.CTk):
         if max_tok > 0: args += ["-n", str(max_tok)]
         # Compatibilidad con clientes OpenAI-compatible
         args += ["--reasoning-format", "none"]
-        # GPU propia: forzar split-mode none + main-gpu configurado
-        args += ["--split-mode", "none", "--main-gpu", str(int(self.settings.get("main_gpu_b", 0)))]
+        # GPU según el perfil de B (se elige al cargar el modelo, igual que A)
+        sm_b = p.get("split_mode", "layer")
+        if sm_b == "none":
+            args += ["--split-mode", "none", "--main-gpu", str(int(p.get("main_gpu", 0)))]
+        elif sm_b:
+            args += ["--split-mode", sm_b]
         # Extra args del perfil de B
         ex = str(p.get("extra_args","")).strip()
         if ex: args.extend(ex.split())
         return args
-
-    def _set_gpu_b(self, value):
-        try:
-            self.settings["main_gpu_b"] = int(value)
-        except (TypeError, ValueError):
-            return
-        save_settings(self.settings)
 
     def _preview_cmd(self):
         cmd = " ".join(self._build_cmd_list())
@@ -6258,11 +6271,29 @@ class LlamaStation(VoiceMixin, ctk.CTk):
                     self.backend_var.set(bn)
                     break
 
+    def _on_backend_change_b(self):
+        """Cambia el ejecutable del slot B al seleccionar otro backend en la sidebar."""
+        bname = self.backend_var_b.get()
+        bpath = BACKENDS.get(bname, "")
+        if bpath and os.path.isfile(bpath):
+            self.settings["server_path_b"] = bpath
+            save_settings(self.settings)
+            self._log(f"[{datetime.now():%H:%M:%S}] Backend B: {bname}  →  {bpath}")
+        else:
+            messagebox.showwarning(T("warn_backend_title"),
+                f"No se encontró el ejecutable:\n{bpath}")
+            # Revertir selección al backend actual guardado de B
+            cur = self.settings.get("server_path_b", "") or self.settings.get("server_path", "")
+            for bn, bp in BACKENDS.items():
+                if bp == cur:
+                    self.backend_var_b.set(bn)
+                    break
+
     def start_server(self, slot="A"):
         if slot == "B":
             if not self.current_model_B:
                 messagebox.showerror(T("err_no_model_title"), T("err_no_model")); return
-            exe = self.settings.get("server_path","")
+            exe = self.settings.get("server_path_b","") or self.settings.get("server_path","")
             if not exe or not os.path.isfile(exe):
                 messagebox.showerror(T("err_server_title"), T("err_no_server")); return
             args = self._build_cmd_list("B")
